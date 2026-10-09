@@ -160,6 +160,10 @@
       const GAP_X = 60;
       const GAP_Y = 26;
 
+      // 网络图连线箭头的固定尺寸（userSpaceOnUse，不随线宽变化）
+      const ARROW_LEN = 12;   // 沿连线方向的长度：箭头尾部 → 箭尖
+      const ARROW_H = 8;      // 垂直方向的宽度
+
       // ============================================================
       // 3. 工具函数
       // ============================================================
@@ -1389,10 +1393,12 @@
         };
 
         // 连线路径
+        // 终点取「任务块左边缘再往回退 ARROW_LEN」，即连线正好收在箭头尾部；
+        // 箭尖由 marker 从尾端自行向前延伸 ARROW_LEN，刚好落在任务块左边缘上。
         const buildPath = (from, to) => {
           const sx = (from.networkX || 0) + NODE_W;
           const sy = (from.networkY || 0) + NODE_H / 2;
-          const ex = (to.networkX || 0);
+          const ex = (to.networkX || 0) - ARROW_LEN;
           const ey = (to.networkY || 0) + NODE_H / 2;
           if (ex - sx >= 30) {
             const c = Math.max(20, Math.min(80, (ex - sx) / 2));
@@ -1413,6 +1419,7 @@
                     fill="none"
                     stroke={crit ? '#f43f5e' : 'currentColor'}
                     strokeWidth={crit ? 2.2 : 1.5}
+                    strokeLinecap={crit ? 'butt' : 'round'}
                     strokeDasharray={crit ? undefined : '6 4'}
                     markerEnd={crit ? 'url(#netArrowCrit)' : 'url(#netArrowNormal)'} />
             );
@@ -1450,14 +1457,17 @@
                  style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
               <svg className="absolute inset-0 overflow-visible pointer-events-none text-slate-400 dark:text-slate-500">
                 <defs>
-                  <marker id="netArrowNormal" markerWidth="10" markerHeight="7" refX="9.5" refY="3.5" orient="auto">
-                    <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+                  {/* markerUnits=userSpaceOnUse：箭头固定为 ARROW_LEN×ARROW_H，不再随线宽缩放；
+                      refX=0 表示把「箭头尾部」对准连线终点，箭尖由此自动向前伸 ARROW_LEN */}
+                  <marker id="netArrowNormal" markerUnits="userSpaceOnUse" markerWidth={ARROW_LEN} markerHeight={ARROW_H} refX="0" refY={ARROW_H / 2} orient="auto">
+                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill="#94a3b8" />
                   </marker>
-                  <marker id="netArrowCrit" markerWidth="10" markerHeight="7" refX="9.5" refY="3.5" orient="auto">
-                    <polygon points="0 0, 10 3.5, 0 7" fill="#f43f5e" />
+                  <marker id="netArrowCrit" markerUnits="userSpaceOnUse" markerWidth={ARROW_LEN} markerHeight={ARROW_H} refX="0" refY={ARROW_H / 2} orient="auto">
+                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill="#f43f5e" />
                   </marker>
-                  <marker id="netArrowActive" markerWidth="10" markerHeight="7" refX="9.5" refY="3.5" orient="auto">
-                    <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6" />
+                  {/* 拖拽预览线：箭尖需跟随鼠标，故 refX 取箭头全长（尾端自动后移） */}
+                  <marker id="netArrowActive" markerUnits="userSpaceOnUse" markerWidth={ARROW_LEN} markerHeight={ARROW_H} refX={ARROW_LEN} refY={ARROW_H / 2} orient="auto">
+                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill="#3b82f6" />
                   </marker>
                 </defs>
                 {renderConnections()}
