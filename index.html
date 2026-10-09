@@ -1,0 +1,2146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>施工进度计划 · 甘特图与网络图</title>
+
+    <!-- 1. 样式库: Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'Noto Sans SC', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+            },
+            colors: {
+              notion: {
+                bg: '#ffffff', bgDark: '#191919',
+                sidebar: '#f7f7f5', sidebarDark: '#202020',
+                border: '#e9e9e7', borderDark: '#2f2f2f',
+                hover: '#efefef', hoverDark: '#2c2c2c',
+              },
+              canvasDark: '#1c1c1c',
+            },
+          },
+        },
+      }
+    </script>
+
+    <!-- 2. 字体与自定义样式（已内联，修复原 style.css 404） -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+      :root { color-scheme: light; }
+      html.dark { color-scheme: dark; }
+      html, body { height: 100%; }
+      body {
+        font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      /* 滚动条 */
+      .custom-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #d0d0ce; border-radius: 999px; border: 2px solid transparent; background-clip: content-box;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #a8a8a6; background-clip: content-box; }
+      .custom-scrollbar::-webkit-scrollbar-corner { background: transparent; }
+      html.dark .custom-scrollbar::-webkit-scrollbar-thumb { background: #4a4a4a; background-clip: content-box; }
+      html.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #666; background-clip: content-box; }
+      .custom-scrollbar { scrollbar-width: thin; scrollbar-color: #d0d0ce transparent; }
+      html.dark .custom-scrollbar { scrollbar-color: #4a4a4a transparent; }
+
+      /* 隐藏滚动条但保留滚动能力（表头用） */
+      .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+      /* 分栏分隔条 */
+      .split-handle:hover .split-grip { background: #fff; }
+
+      /* 动画 */
+      @keyframes wbPop { from { opacity: 0; transform: scale(.97) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+      .animate-pop { animation: wbPop .16s cubic-bezier(.2,.8,.3,1); }
+      @keyframes wbFade { from { opacity: 0; } to { opacity: 1; } }
+      .animate-fade { animation: wbFade .18s ease-out; }
+
+      input[type="range"] { accent-color: #2563eb; }
+      textarea:focus, input:focus { outline: none; }
+      ::selection { background: rgba(37,99,235,.22); }
+    </style>
+
+    <!-- 3. 核心库 (React, ReactDOM, Babel) —— 使用 production 版本，渲染性能更好 -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- 4. 导出功能库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body class="bg-notion-bg text-gray-900 dark:bg-notion-bgDark dark:text-gray-100 transition-colors duration-200">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      // ============================================================
+      // 0. 环境与钩子
+      // ============================================================
+      const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } = React;
+      const { createRoot } = ReactDOM;
+
+      // ============================================================
+      // 1. 图标（内联 SVG，避免 CDN 版本兼容问题）
+      // ============================================================
+      const Svg = ({ size = 20, className = "", children, ...props }) => (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+          {children}
+        </svg>
+      );
+
+      const Icons = {
+        ChevronRight: (p) => <Svg {...p}><polyline points="9 18 15 12 9 6"></polyline></Svg>,
+        ChevronDown: (p) => <Svg {...p}><polyline points="6 9 12 15 18 9"></polyline></Svg>,
+        ChevronUp: (p) => <Svg {...p}><polyline points="18 15 12 9 6 15"></polyline></Svg>,
+        Calendar: (p) => <Svg {...p}><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></Svg>,
+        Search: (p) => <Svg {...p}><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></Svg>,
+        ArrowUp: (p) => <Svg {...p}><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></Svg>,
+        ArrowDown: (p) => <Svg {...p}><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></Svg>,
+        Trash2: (p) => <Svg {...p}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></Svg>,
+        Pencil: (p) => <Svg {...p}><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></Svg>,
+        Download: (p) => <Svg {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></Svg>,
+        Image: (p) => <Svg {...p}><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-4.6-4.6a2 2 0 0 0-2.8 0L3 21"></path></Svg>,
+        FileText: (p) => <Svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></Svg>,
+        Plus: (p) => <Svg {...p}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></Svg>,
+        Moon: (p) => <Svg {...p}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></Svg>,
+        Sun: (p) => <Svg {...p}><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></Svg>,
+        Monitor: (p) => <Svg {...p}><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></Svg>,
+        Network: (p) => <Svg {...p}><rect x="16" y="16" width="6" height="6" rx="1"></rect><rect x="2" y="16" width="6" height="6" rx="1"></rect><rect x="9" y="2" width="6" height="6" rx="1"></rect><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"></path><path d="M12 12V8"></path></Svg>,
+        GitBranch: (p) => <Svg {...p}><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></Svg>,
+        LayoutGrid: (p) => <Svg {...p}><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect></Svg>,
+        Maximize2: (p) => <Svg {...p}><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></Svg>,
+        ZoomIn: (p) => <Svg {...p}><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></Svg>,
+        ZoomOut: (p) => <Svg {...p}><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line></Svg>,
+        RotateCcw: (p) => <Svg {...p}><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></Svg>,
+        Flag: (p) => <Svg {...p}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><line x1="4" y1="22" x2="4" y2="15"></line></Svg>,
+        Check: (p) => <Svg {...p}><polyline points="20 6 9 17 4 12"></polyline></Svg>,
+        AlertTriangle: (p) => <Svg {...p}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></Svg>,
+        X: (p) => <Svg {...p}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></Svg>,
+        ListTree: (p) => <Svg {...p}><path d="M21 12h-8"></path><path d="M21 6H8"></path><path d="M21 18h-8"></path><path d="M3 6v4c0 1.1.9 2 2 2h3"></path><path d="M3 10v6c0 1.1.9 2 2 2h3"></path></Svg>,
+      };
+
+      // ============================================================
+      // 2. 常量
+      // ============================================================
+      const MS_DAY = 24 * 60 * 60 * 1000;
+
+      // 视图模式：dayWidth = 每天像素宽度（基准密度），最终宽度 = dayWidth × 时间轴缩放倍率
+      const VIEW_MODE_CONFIG = {
+        Day:   { dayWidth: 40, label: '日', tip: '按日：每格 1 天，显示日期与星期' },
+        Week:  { dayWidth: 22, label: '周', tip: '按周：每格 1 周，显示本周起止日期' },
+        Month: { dayWidth: 10, label: '月', tip: '按月：每格 1 个月，总览全周期' },
+      };
+
+      const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+
+      // 时间轴缩放范围（百分比）
+      const ZOOM_MIN = 0.4;
+      const ZOOM_MAX = 3;
+
+      const ROW_HEIGHT = 40;
+      const HEADER_HEIGHT = 56;
+
+      const NODE_W = 190;
+      const NODE_H = 108;
+      const GAP_X = 60;
+      const GAP_Y = 26;
+
+      // ============================================================
+      // 3. 工具函数
+      // ============================================================
+      const generateId = () => Math.random().toString(36).slice(2, 10);
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+      const startOfDay = (d) => {
+        const r = new Date(d);
+        r.setHours(0, 0, 0, 0);
+        return r;
+      };
+
+      const addDays = (date, days) => {
+        const r = new Date(date);
+        r.setDate(r.getDate() + days);
+        return r;
+      };
+
+      // 自然日差（按本地时区归零后计算，避免时区/夏令时误差）
+      const diffDays = (a, b) => Math.round((startOfDay(a).getTime() - startOfDay(b).getTime()) / MS_DAY);
+
+      const formatDate = (date) => {
+        if (!date) return '';
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return '';
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      };
+
+      // "YYYY-MM-DD" -> 本地 0 点 Date（不要用 new Date(str)，会按 UTC 解析导致差一天）
+      const parseDateInput = (v) => {
+        if (!v) return null;
+        const parts = String(v).split('-').map(Number);
+        if (parts.length !== 3 || parts.some(isNaN)) return null;
+        const d = new Date(parts[0], parts[1] - 1, parts[2]);
+        return isNaN(d.getTime()) ? null : d;
+      };
+
+      const durationOf = (task) => Math.max(1, diffDays(task.end, task.start) + 1);
+
+      // 里程碑：显式标记，或开始=结束
+      const isMilestone = (task) => !!task.milestone || diffDays(task.end, task.start) === 0;
+
+      const flattenTasks = (tasks) => {
+        const sorted = [...tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        return sorted.map((task, index) => ({ ...task, index }));
+      };
+
+      // 项目时间范围（前后留出余量，便于拖拽调整）
+      const getProjectDateRange = (tasks) => {
+        const valid = tasks.filter(
+          (t) => !isNaN(new Date(t.start).getTime()) && !isNaN(new Date(t.end).getTime())
+        );
+        if (valid.length === 0) {
+          return { start: addDays(startOfDay(new Date()), -5), end: addDays(startOfDay(new Date()), 25) };
+        }
+        let min = startOfDay(valid[0].start);
+        let max = startOfDay(valid[0].end);
+        valid.forEach((t) => {
+          const s = startOfDay(t.start);
+          const e = startOfDay(t.end);
+          if (s < min) min = s;
+          if (e > max) max = e;
+        });
+        return { start: addDays(min, -4), end: addDays(max, 8) };
+      };
+
+      // 依赖成环检测：判断 taskId 是否（间接）依赖 targetDependencyId
+      const hasCircularDependency = (taskId, targetDependencyId, tasks) => {
+        if (taskId === targetDependencyId) return true;
+        const target = tasks.find((t) => t.id === targetDependencyId);
+        if (!target || !target.dependencies) return false;
+        return target.dependencies.some((depId) => hasCircularDependency(taskId, depId, tasks));
+      };
+
+      // ============================================================
+      // 4. 关键工作（由任务表「关键」复选框人工标注）
+      //    —— 原「总时差（CPM 自动计算）」功能已取消
+      // ============================================================
+      const computeCritical = (tasks) => {
+        const list = tasks || [];
+        const critical = new Set();
+        list.forEach((t) => { if (t.critical) critical.add(t.id); });
+
+        // 关键线路连线：首尾两项都被勾选为关键工作时，该连线一并标红
+        const criticalEdges = new Set();
+        list.forEach((t) => {
+          (t.dependencies || []).forEach((d) => {
+            if (critical.has(t.id) && critical.has(d)) criticalEdges.add(d + '|' + t.id);
+          });
+        });
+
+        return { critical, criticalEdges };
+      };
+
+      // ============================================================
+      // 5. 网络图布局
+      // ============================================================
+      const computeLevels = (tasks) => {
+        const ids = new Set(tasks.map((t) => t.id));
+        const level = new Map();
+        let guard = tasks.length * tasks.length + 20;
+        let changed = true;
+        while (changed && guard-- > 0) {
+          changed = false;
+          tasks.forEach((t) => {
+            if (level.has(t.id)) return;
+            const deps = (t.dependencies || []).filter((d) => ids.has(d));
+            if (deps.length === 0) { level.set(t.id, 0); changed = true; return; }
+            const ls = deps.map((d) => level.get(d));
+            if (ls.every((l) => l !== undefined)) { level.set(t.id, Math.max(...ls) + 1); changed = true; }
+          });
+        }
+        tasks.forEach((t) => { if (!level.has(t.id)) level.set(t.id, 0); });
+        return level;
+      };
+
+      const bucketByLevel = (tasks) => {
+        const level = computeLevels(tasks);
+        const buckets = {};
+        tasks.forEach((t) => {
+          const l = level.get(t.id);
+          if (!buckets[l]) buckets[l] = [];
+          buckets[l].push(t);
+        });
+        return { level, buckets };
+      };
+
+      // 首次布局：仅在节点没有坐标时赋值
+      const calculateNetworkLayout = (tasks) => {
+        const { level, buckets } = bucketByLevel(tasks);
+        return tasks.map((t) => {
+          if (t.networkX !== undefined && t.networkY !== undefined) return t;
+          const l = level.get(t.id);
+          const i = buckets[l].indexOf(t);
+          return { ...t, networkX: 40 + l * (NODE_W + GAP_X), networkY: 40 + i * (NODE_H + GAP_Y) };
+        });
+      };
+
+      // 自动布局：按层级横向排布 + 每层纵向居中，整体更整洁
+      const autoLayoutNetwork = (tasks) => {
+        if (!tasks.length) return tasks;
+        const { buckets } = bucketByLevel(tasks);
+        const keys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+        const counts = keys.map((k) => buckets[k].length);
+        const maxH = Math.max(...counts) * (NODE_H + GAP_Y) - GAP_Y;
+        const pos = {};
+        keys.forEach((l) => {
+          const arr = buckets[l];
+          const h = arr.length * (NODE_H + GAP_Y) - GAP_Y;
+          const top = (maxH - h) / 2;
+          arr.forEach((t, i) => {
+            pos[t.id] = { x: 40 + l * (NODE_W + GAP_X), y: 40 + top + i * (NODE_H + GAP_Y) };
+          });
+        });
+        return tasks.map((t) => ({ ...t, networkX: pos[t.id].x, networkY: pos[t.id].y }));
+      };
+
+      // ============================================================
+      // 6. 通用小组件
+      // ============================================================
+      const Toast = ({ toast }) => {
+        if (!toast) return null;
+        const tone = {
+          info: 'bg-slate-900/95 dark:bg-slate-700/95 text-white',
+          success: 'bg-emerald-600/95 text-white',
+          warn: 'bg-amber-500/95 text-white',
+          error: 'bg-rose-600/95 text-white',
+        }[toast.type || 'info'];
+        return (
+          <div className="fixed bottom-6 left-0 right-0 z-[120] flex justify-center pointer-events-none px-4">
+            <div className={`animate-pop px-4 py-2.5 rounded-xl shadow-xl text-sm font-medium flex items-center gap-2 ${tone}`}>
+              {toast.type === 'error' || toast.type === 'warn'
+                ? <Icons.AlertTriangle size={15} />
+                : <Icons.Check size={15} />}
+              <span>{toast.message}</span>
+            </div>
+          </div>
+        );
+      };
+
+      const ConfirmDialog = ({ state, onClose }) => {
+        if (!state) return null;
+        return (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade" onClick={onClose}>
+            <div className="animate-pop bg-white dark:bg-notion-sidebarDark w-full max-w-sm rounded-xl shadow-2xl border border-notion-border dark:border-notion-borderDark overflow-hidden"
+                 onClick={(e) => e.stopPropagation()}>
+              <div className="p-5 flex gap-3">
+                <div className="shrink-0 w-9 h-9 rounded-full bg-rose-50 dark:bg-rose-500/15 flex items-center justify-center">
+                  <Icons.AlertTriangle size={18} className="text-rose-500" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold">{state.title}</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed whitespace-pre-wrap">{state.message}</p>
+                </div>
+              </div>
+              <div className="px-5 pb-5 flex justify-end gap-2">
+                <button onClick={onClose} className="px-3.5 py-1.5 text-sm rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition">取消</button>
+                <button onClick={() => { const f = state.onConfirm; onClose(); if (f) f(); }}
+                        className="px-3.5 py-1.5 text-sm rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition">
+                  {state.confirmText || '确定'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      // 关键词高亮
+      const Highlight = ({ text, query }) => {
+        const str = text == null ? '' : String(text);
+        const q = (query || '').trim();
+        if (!q) return <React.Fragment>{str}</React.Fragment>;
+        const i = str.toLowerCase().indexOf(q.toLowerCase());
+        if (i === -1) return <React.Fragment>{str}</React.Fragment>;
+        return (
+          <React.Fragment>
+            {str.slice(0, i)}
+            <mark className="bg-amber-200 dark:bg-amber-400/30 text-inherit rounded-[3px] px-0.5">{str.slice(i, i + q.length)}</mark>
+            {str.slice(i + q.length)}
+          </React.Fragment>
+        );
+      };
+
+      // ============================================================
+      // 7. 组件: 任务编辑弹窗
+      // ============================================================
+      const TaskModal = ({ isOpen, onClose, onSave, task, allTasks, onDelete }) => {
+        const [form, setForm] = useState(null);
+
+        useEffect(() => {
+          if (!isOpen) return;
+          if (task) {
+            setForm({
+              name: task.name || '',
+              content: task.content || '',
+              start: startOfDay(task.start),
+              end: startOfDay(task.end),
+              progress: clamp(task.progress || 0, 0, 100),
+              dependencies: [...(task.dependencies || [])],
+              milestone: !!task.milestone,
+              critical: !!task.critical,
+            });
+          } else {
+            const t = startOfDay(new Date());
+            setForm({ name: '', content: '', start: t, end: addDays(t, 2), progress: 0, dependencies: [], milestone: false, critical: false });
+          }
+        }, [isOpen, task]);
+
+        useEffect(() => {
+          if (!isOpen) return;
+          const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+          window.addEventListener('keydown', onKey);
+          return () => window.removeEventListener('keydown', onKey);
+        }, [isOpen, onClose]);
+
+        if (!isOpen || !form) return null;
+
+        const dur = Math.max(1, diffDays(form.end, form.start) + 1);
+        const set = (patch) => setForm((p) => ({ ...p, ...patch }));
+
+        const onDate = (key) => (e) => {
+          const d = parseDateInput(e.target.value);
+          if (!d) return;
+          setForm((p) => {
+            const next = { ...p, [key]: d };
+            if (p.milestone) { next.start = d; next.end = d; }
+            else if (key === 'start' && next.end < next.start) next.end = next.start;
+            else if (key === 'end' && next.end < next.start) next.start = next.end;
+            return next;
+          });
+        };
+
+        const toggleDep = (id) => setForm((p) => ({
+          ...p,
+          dependencies: p.dependencies.includes(id)
+            ? p.dependencies.filter((x) => x !== id)
+            : [...p.dependencies, id],
+        }));
+
+        const submit = (e) => {
+          e.preventDefault();
+          const name = (form.name || '').trim();
+          if (!name) return;
+          const payload = { ...form, name, milestone: !!form.milestone, critical: !!form.critical };
+          if (payload.milestone) { payload.end = payload.start; }
+          if (payload.end < payload.start) payload.end = payload.start;
+          onSave(payload);
+          onClose();
+        };
+
+        const others = allTasks.filter((t) => t.id !== (task && task.id));
+
+        return (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade"
+               onClick={onClose}>
+            <div className="animate-pop bg-white dark:bg-notion-sidebarDark w-full max-w-lg rounded-xl shadow-2xl border border-notion-border dark:border-notion-borderDark overflow-hidden flex flex-col max-h-[88vh]"
+                 onClick={(e) => e.stopPropagation()}>
+              <div className="flex justify-between items-center px-5 py-3.5 border-b border-notion-border dark:border-notion-borderDark">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-50 dark:bg-blue-500/15 flex items-center justify-center">
+                    {form.milestone ? <Icons.Flag size={14} className="text-amber-500" /> : <Icons.ListTree size={14} className="text-blue-600 dark:text-blue-400" />}
+                  </div>
+                  <h2 className="text-base font-semibold">{task ? '编辑任务' : '新建任务'}</h2>
+                </div>
+                <button onClick={onClose} className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition" title="关闭 (Esc)">
+                  <Icons.X size={17} className="text-gray-500" />
+                </button>
+              </div>
+
+              <form onSubmit={submit} className="p-5 space-y-4 overflow-y-auto custom-scrollbar">
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1.5">任务名称 <span className="text-rose-500">*</span></label>
+                  <input required autoFocus name="name" value={form.name}
+                         onChange={(e) => set({ name: e.target.value })}
+                         className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-800/70 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition"
+                         placeholder="例如：BAS 桥架安装" />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1.5">任务内容 / 施工要点</label>
+                  <textarea name="content" rows={2} value={form.content}
+                            onChange={(e) => set({ content: e.target.value })}
+                            className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-800/70 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 resize-none transition"
+                            placeholder="可写施工内容、验收标准、责任人等" />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1.5">开始日期</label>
+                    <div className="relative">
+                      <input type="date" value={formatDate(form.start)} disabled={form.milestone}
+                             onChange={onDate('start')}
+                             className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-800/70 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 disabled:opacity-60 transition" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1.5">结束日期</label>
+                    <div className="relative">
+                      <input type="date" value={formatDate(form.end)} disabled={form.milestone}
+                             onChange={onDate('end')}
+                             className="w-full px-3 py-2 text-sm bg-gray-50 dark:bg-gray-800/70 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 disabled:opacity-60 transition" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 px-3 py-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" checked={form.milestone}
+                           onChange={(e) => setForm((p) => {
+                             const on = e.target.checked;
+                             return { ...p, milestone: on, end: on ? p.start : addDays(p.start, 2) };
+                           })}
+                           className="w-4 h-4 rounded accent-amber-500" />
+                    <span className="text-xs font-medium text-gray-700 dark:text-gray-200">设为里程碑（单日节点）</span>
+                  </label>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums">
+                    {form.milestone ? '节点' : `工期 ${dur} 天`}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 px-3 py-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" checked={!!form.critical}
+                           onChange={(e) => set({ critical: e.target.checked })}
+                           className="w-4 h-4 rounded accent-rose-500" />
+                    <span className="text-xs font-medium text-gray-700 dark:text-gray-200">设为关键工作</span>
+                  </label>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {form.critical ? '甘特图 / 网络图标红' : '一般工作'}
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400">进度完成度</label>
+                    <span className="text-xs font-bold text-blue-600 dark:text-blue-400 tabular-nums">{form.progress}%</span>
+                  </div>
+                  <input type="range" min="0" max="100" step="5" value={form.progress}
+                         onChange={(e) => set({ progress: parseInt(e.target.value, 10) })}
+                         className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1.5">
+                    紧前任务（前置依赖）
+                    {form.dependencies.length > 0 && <span className="ml-2 text-blue-600 dark:text-blue-400">已选 {form.dependencies.length} 项</span>}
+                  </label>
+                  {others.length === 0 ? (
+                    <p className="text-xs text-gray-400 py-2">暂无其他任务可选</p>
+                  ) : (
+                    <div className="max-h-40 overflow-y-auto custom-scrollbar rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/40 p-1.5 space-y-0.5">
+                      {others.map((t) => {
+                        const bad = task ? hasCircularDependency(task.id, t.id, allTasks) : false;
+                        const checked = form.dependencies.includes(t.id);
+                        return (
+                          <label key={t.id}
+                                 className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition ${bad ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-white dark:hover:bg-gray-700/60'}`}
+                                 title={bad ? '会形成循环依赖，不可选择' : (t.content || t.name)}>
+                            <input type="checkbox" checked={checked} disabled={bad}
+                                   onChange={() => toggleDep(t.id)}
+                                   className="w-3.5 h-3.5 rounded accent-blue-600" />
+                            <span className="truncate text-gray-700 dark:text-gray-200">{t.name}</span>
+                            <span className="ml-auto text-[10px] text-gray-400 tabular-nums shrink-0">{formatDate(t.start)}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <p className="text-[11px] text-gray-400 mt-1.5">完成–开始（FS）关系：前置任务结束后，本任务方可开始</p>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-3 border-t border-notion-border dark:border-notion-borderDark">
+                  {task && onDelete && (
+                    <button type="button" onClick={() => { onDelete(task.id); onClose(); }}
+                            className="px-3.5 py-2 text-sm text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg transition mr-auto flex items-center gap-1.5">
+                      <Icons.Trash2 size={14} /> 删除任务
+                    </button>
+                  )}
+                  <button type="button" onClick={onClose}
+                          className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition">
+                    取消
+                  </button>
+                  <button type="submit"
+                          className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition active:scale-95">
+                    {task ? '保存修改' : '创建任务'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      };
+
+      // ============================================================
+      // 8. 组件: 甘特图
+      // ============================================================
+      const GanttChart = ({
+        tasks, viewMode, onTaskUpdate, onEditTask, onReorderTasks, onMoveTask, onDeleteTask,
+        schedule, showCritical, searchQuery,
+        sidebarWidth, setSidebarWidth, colWidths, setColWidths,
+      }) => {
+        const config = VIEW_MODE_CONFIG[viewMode];
+
+        // 时间轴缩放倍率（滑块控制），最终每天像素 = 基准密度 × 倍率
+        const [timeZoom, setTimeZoom] = useState(1);
+        const dayWidth = Math.round(config.dayWidth * timeZoom * 100) / 100;
+
+        const [contextMenu, setContextMenu] = useState(null);
+        const [draggingRowId, setDraggingRowId] = useState(null);
+        const [isDraggingBar, setIsDraggingBar] = useState(false);
+        const [hoverId, setHoverId] = useState(null);
+
+        const containerRef = useRef(null);
+        const sideHeadRef = useRef(null);
+        const sideRowsRef = useRef(null);
+        const chartHeadRef = useRef(null);
+        const chartBodyRef = useRef(null);
+        const resizeRef = useRef(null);
+        const dragRef = useRef(null);
+
+        const flatTasks = useMemo(() => flattenTasks(tasks), [tasks]);
+        const dateRange = useMemo(() => getProjectDateRange(tasks), [tasks]);
+        const totalDays = Math.max(1, diffDays(dateRange.end, dateRange.start) + 1);
+        const chartWidth = totalDays * dayWidth;
+        const totalColWidth = Object.keys(colWidths).reduce((a, k) => a + colWidths[k], 0);
+        // gridHeight：最后一个任务行的底边 —— 竖向网格线、周末底色、今天列都只画到这里，
+        // 保证与左侧任务表行数严格对齐（不再多出空白格子）。
+        const gridHeight = flatTasks.length * ROW_HEIGHT;
+        // contentHeight：网格 + 一行"新建任务"行，作为滚动区高度。
+        const contentHeight = Math.max(gridHeight + ROW_HEIGHT, 320);
+
+        // 全局鼠标事件里读取的最新值（避免闭包捕获旧数据）
+        const live = useRef({});
+        live.current = { tasks, dayWidth, dateRange, onTaskUpdate };
+
+        // ---------- 时间轴缩放（滑块） ----------
+        // 缩放时保持"视口中点对应的日期"不动，避免画面乱跳
+        const zoomAnchorRef = useRef(null);
+
+        const applyTimeZoom = (next) => {
+          const v = clamp(Math.round(next * 100) / 100, ZOOM_MIN, ZOOM_MAX);
+          if (Math.abs(v - timeZoom) < 0.001) return;
+          const body = chartBodyRef.current;
+          if (body && body.clientWidth) {
+            zoomAnchorRef.current = { center: body.scrollLeft + body.clientWidth / 2, ratio: v / timeZoom };
+          } else {
+            zoomAnchorRef.current = null;
+          }
+          setTimeZoom(v);
+        };
+
+        useLayoutEffect(() => {
+          const a = zoomAnchorRef.current;
+          zoomAnchorRef.current = null;
+          const body = chartBodyRef.current;
+          if (!a || !body) return;
+          body.scrollLeft = Math.max(0, a.center * a.ratio - body.clientWidth / 2);
+          if (chartHeadRef.current) chartHeadRef.current.scrollLeft = body.scrollLeft;
+        }, [timeZoom]);
+
+        // 切换 日 / 周 / 月 时，缩放倍率回到 100%
+        useEffect(() => { applyTimeZoom(1); }, [viewMode]);
+
+        // ---------- 拖拽调整任务条 ----------
+        const applyTaskDrag = (e) => {
+          const d = dragRef.current;
+          if (!d) return;
+          const cur = live.current;
+          const task = cur.tasks.find((t) => t.id === d.taskId);
+          if (!task) return;
+          const daysDelta = Math.round((e.clientX - d.startX) / cur.dayWidth);
+          const timeDelta = daysDelta * MS_DAY;
+          let newStart = new Date(d.originalStart + timeDelta);
+          let newEnd = new Date(d.originalEnd + timeDelta);
+          let milestone = !!task.milestone;
+
+          if (d.type === 'resize-left') {
+            if (newStart >= newEnd) newStart = addDays(newEnd, -1);
+            milestone = false;
+          } else if (d.type === 'resize-right') {
+            if (newEnd <= newStart) newEnd = addDays(newStart, 1);
+            milestone = false;
+          }
+          if (task.start.getTime() === newStart.getTime() && task.end.getTime() === newEnd.getTime() && milestone === !!task.milestone) return;
+          cur.onTaskUpdate({ ...task, start: newStart, end: newEnd, milestone });
+        };
+
+        const startBarDrag = (e, task, type) => {
+          e.stopPropagation();
+          e.preventDefault();
+          dragRef.current = {
+            taskId: task.id, type, startX: e.clientX,
+            originalStart: startOfDay(task.start).getTime(),
+            originalEnd: startOfDay(task.end).getTime(),
+          };
+          setIsDraggingBar(true);
+        };
+
+        const startColResize = (e, col) => {
+          e.preventDefault();
+          e.stopPropagation();
+          resizeRef.current = { kind: 'col', col, startX: e.clientX, startWidth: colWidths[col] };
+        };
+
+        const startSidebarResize = (e) => {
+          e.preventDefault();
+          resizeRef.current = { kind: 'sidebar' };
+        };
+
+        // 全局监听（只注册一次）
+        useEffect(() => {
+          const onMove = (e) => {
+            const r = resizeRef.current;
+            if (r && r.kind === 'sidebar' && containerRef.current) {
+              const rect = containerRef.current.getBoundingClientRect();
+              setSidebarWidth(clamp(e.clientX - rect.left + 2, 260, Math.max(280, rect.width - 240)));
+            } else if (r && r.kind === 'col') {
+              const next = Math.max(38, r.startWidth + (e.clientX - r.startX));
+              setColWidths((prev) => (prev[r.col] === next ? prev : { ...prev, [r.col]: next }));
+            } else if (dragRef.current) {
+              applyTaskDrag(e);
+            }
+          };
+          const onUp = () => {
+            resizeRef.current = null;
+            if (dragRef.current) { dragRef.current = null; setIsDraggingBar(false); }
+          };
+          const onClick = () => setContextMenu(null);
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+          window.addEventListener('click', onClick);
+          return () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            window.removeEventListener('click', onClick);
+          };
+        }, []);
+
+        // ---------- 滚动同步（修复侧栏与图表错位） ----------
+        const onSideScroll = (e) => {
+          const el = e.currentTarget;
+          if (sideHeadRef.current) sideHeadRef.current.scrollLeft = el.scrollLeft;
+          if (chartBodyRef.current) chartBodyRef.current.scrollTop = el.scrollTop;
+        };
+        const onChartScroll = (e) => {
+          const el = e.currentTarget;
+          if (chartHeadRef.current) chartHeadRef.current.scrollLeft = el.scrollLeft;
+          if (sideRowsRef.current) sideRowsRef.current.scrollTop = el.scrollTop;
+        };
+
+        // ---------- 表头数据 ----------
+        // 第一行（分组行）：日/周视图按月分组，月视图按年分组
+        const topSegments = useMemo(() => {
+          const byYear = viewMode === 'Month';
+          const segs = [];
+          let cur = startOfDay(dateRange.start);
+          const last = startOfDay(dateRange.end);
+          while (cur <= last) {
+            const naturalEnd = byYear
+              ? new Date(cur.getFullYear(), 11, 31)
+              : new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+            const segEnd = naturalEnd < last ? naturalEnd : last;
+            segs.push({
+              key: cur.getTime(),
+              left: diffDays(cur, dateRange.start) * dayWidth,
+              width: (diffDays(segEnd, cur) + 1) * dayWidth,
+              label: byYear ? `${cur.getFullYear()}年` : `${cur.getFullYear()}年${cur.getMonth() + 1}月`,
+            });
+            cur = addDays(segEnd, 1);
+          }
+          return segs;
+        }, [dateRange, dayWidth, viewMode]);
+
+        // 逐日的周末信息（用于周末底色）
+        const dayFlags = useMemo(() => {
+          const out = [];
+          let cur = startOfDay(dateRange.start);
+          const last = startOfDay(dateRange.end);
+          while (cur <= last) {
+            const idx = diffDays(cur, dateRange.start);
+            const dow = cur.getDay();
+            out.push({ idx, left: idx * dayWidth, weekend: dow === 0 || dow === 6 });
+            cur = addDays(cur, 1);
+          }
+          return out;
+        }, [dateRange, dayWidth]);
+
+        // 时间刻度单元格：日 = 1 格/天，周 = 1 格/周，月 = 1 格/月
+        // 三种视图都渲染完整的时间文字与格线
+        const unitCells = useMemo(() => {
+          const cells = [];
+          const first = startOfDay(dateRange.start);
+          const last = startOfDay(dateRange.end);
+          const at = (d) => diffDays(d, first);
+
+          if (viewMode === 'Day') {
+            let cur = first;
+            while (cur <= last) {
+              const i = at(cur);
+              const dow = cur.getDay();
+              cells.push({
+                key: 'd' + i, left: i * dayWidth, width: dayWidth,
+                label: String(cur.getDate()), sub: WEEKDAYS[dow],
+                full: `${formatDate(cur)}（周${WEEKDAYS[dow]}）`,
+              });
+              cur = addDays(cur, 1);
+            }
+            return cells;
+          }
+
+          if (viewMode === 'Week') {
+            let cur = first;
+            while (cur <= last) {
+              const offset = (cur.getDay() + 6) % 7; // 周一 = 0
+              const naturalEnd = addDays(cur, 6 - offset);
+              const segEnd = naturalEnd < last ? naturalEnd : last;
+              const i = at(cur);
+              cells.push({
+                key: 'w' + i, left: i * dayWidth, width: (at(segEnd) - i + 1) * dayWidth,
+                label: `${cur.getMonth() + 1}/${cur.getDate()} ~ ${segEnd.getMonth() + 1}/${segEnd.getDate()}`,
+                short: `${cur.getMonth() + 1}/${cur.getDate()}`,
+                full: `${formatDate(cur)} ~ ${formatDate(segEnd)}`,
+              });
+              cur = addDays(segEnd, 1);
+            }
+            return cells;
+          }
+
+          let cur = first;
+          while (cur <= last) {
+            const monthEnd = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+            const segEnd = monthEnd < last ? monthEnd : last;
+            const i = at(cur);
+            cells.push({
+              key: 'm' + i, left: i * dayWidth, width: (at(segEnd) - i + 1) * dayWidth,
+              label: `${cur.getFullYear()}年${cur.getMonth() + 1}月`,
+              full: `${cur.getFullYear()}年${cur.getMonth() + 1}月（${formatDate(cur)} ~ ${formatDate(segEnd)}）`,
+            });
+            cur = addDays(segEnd, 1);
+          }
+          return cells;
+        }, [dateRange, dayWidth, viewMode]);
+
+        const todayIdx = diffDays(new Date(), dateRange.start);
+        const showToday = todayIdx >= 0 && todayIdx < totalDays;
+
+        // ---------- 依赖连线 ----------
+        const buildDepPath = (dep, cur) => {
+          const x1 = (diffDays(dep.end, dateRange.start) + 1) * dayWidth;
+          const y1 = dep.index * ROW_HEIGHT + ROW_HEIGHT / 2;
+          const x2 = diffDays(cur.start, dateRange.start) * dayWidth;
+          const y2 = cur.index * ROW_HEIGHT + ROW_HEIGHT / 2;
+          if (x2 - x1 >= 20) {
+            const c = Math.max(14, Math.min(64, (x2 - x1) / 2));
+            return `M ${x1} ${y1} C ${x1 + c} ${y1}, ${x2 - c} ${y2}, ${x2} ${y2}`;
+          }
+          const elbow = x1 + 14;
+          return `M ${x1} ${y1} L ${elbow} ${y1} L ${elbow} ${y2} L ${x2} ${y2}`;
+        };
+
+        const renderDependencies = () => tasks.flatMap((task) =>
+          (task.dependencies || []).map((depId) => {
+            const dep = flatTasks.find((t) => t.id === depId);
+            const cur = flatTasks.find((t) => t.id === task.id);
+            if (!dep || !cur) return null;
+            const crit = showCritical && schedule.criticalEdges.has(depId + '|' + task.id);
+            return (
+              <path key={depId + '-' + task.id}
+                    d={buildDepPath(dep, cur)}
+                    stroke={crit ? '#f43f5e' : 'currentColor'}
+                    strokeWidth={crit ? 2 : 1.4}
+                    strokeDasharray={crit ? undefined : '5 3'}
+                    fill="none"
+                    markerEnd={crit ? 'url(#arrowCrit)' : 'url(#arrowNorm)'}
+                    opacity={crit ? 1 : 0.7} />
+            );
+          })
+        );
+
+        // ---------- 行拖拽排序 ----------
+        const handleRowDrop = (e, targetId) => {
+          e.preventDefault();
+          const sourceId = e.dataTransfer.getData('text/plain');
+          setDraggingRowId(null);
+          if (sourceId && sourceId !== targetId) onReorderTasks(sourceId, targetId);
+        };
+
+        const handleContextMenu = (e, taskId) => {
+          e.preventDefault();
+          setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 168), y: Math.min(e.clientY, window.innerHeight - 210), taskId });
+        };
+
+        // ---------- 侧栏列头 ----------
+        const HeadCell = ({ col, label, center }) => (
+          <div className={`relative flex items-center h-full shrink-0 border-r border-notion-border dark:border-notion-borderDark ${center ? 'justify-center' : 'px-2.5'}`}
+               style={{ width: colWidths[col] }}>
+            <span className="truncate text-[11px] font-semibold text-gray-500 dark:text-gray-400">{label}</span>
+            <div className="absolute right-0 top-0 bottom-0 w-[3px] cursor-col-resize hover:bg-blue-400/70 z-10"
+                 onMouseDown={(e) => startColResize(e, col)} title="拖动调整列宽" />
+          </div>
+        );
+
+        return (
+          <div className="flex flex-col flex-1 min-h-0 relative">
+
+          {/* ============ 时间轴缩放滑块（位于导出区域之外，不会出现在导出的图里） ============ */}
+          <div className="absolute bottom-3 right-3 z-30 flex items-center gap-1.5 bg-white/95 dark:bg-gray-800/95 backdrop-blur px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 shadow-md"
+               title="拖动滑块缩放右侧时间轴">
+            <button onClick={() => applyTimeZoom(timeZoom / 1.25)} title="缩小时间轴"
+                    className="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition">
+              <Icons.ZoomOut size={13} />
+            </button>
+            <input type="range" min={ZOOM_MIN * 100} max={ZOOM_MAX * 100} step="5"
+                   value={Math.round(timeZoom * 100)}
+                   onChange={(e) => applyTimeZoom(parseInt(e.target.value, 10) / 100)}
+                   className="w-28 h-1.5 accent-blue-600 cursor-pointer"
+                   aria-label="时间轴缩放" />
+            <button onClick={() => applyTimeZoom(timeZoom * 1.25)} title="放大时间轴"
+                    className="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition">
+              <Icons.ZoomIn size={13} />
+            </button>
+            <span className="text-[10px] tabular-nums text-gray-500 dark:text-gray-400 w-8 text-right">{Math.round(timeZoom * 100)}%</span>
+            <button onClick={() => applyTimeZoom(1)} title="重置为 100%"
+                    className="p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 transition">
+              <Icons.RotateCcw size={12} />
+            </button>
+          </div>
+
+          <div className="flex flex-1 overflow-hidden h-full relative" id="gantt-export-area">
+            {/* ============ 左侧：任务表 ============ */}
+            <div data-role="gantt-sidebar" className="flex-shrink-0 bg-white dark:bg-notion-bgDark border-r border-notion-border dark:border-notion-borderDark flex flex-col z-20" style={{ width: sidebarWidth }}>
+              {/* 表头 */}
+              <div ref={sideHeadRef} className="h-[56px] shrink-0 border-b border-notion-border dark:border-notion-borderDark bg-notion-sidebar dark:bg-notion-sidebarDark overflow-x-auto overflow-y-hidden no-scrollbar">
+                <div className="flex h-full" style={{ width: totalColWidth }}>
+                  <HeadCell col="index" label="序" center />
+                  <HeadCell col="name" label="任务名称" />
+                  <HeadCell col="content" label="任务内容" />
+                  <HeadCell col="start" label="开始" center />
+                  <HeadCell col="end" label="结束" center />
+                  <HeadCell col="duration" label="工期" center />
+                  <HeadCell col="critical" label="关键" center />
+                </div>
+              </div>
+              {/* 数据行 */}
+              <div ref={sideRowsRef} className="flex-1 overflow-auto custom-scrollbar" onScroll={onSideScroll}>
+                <div style={{ width: totalColWidth, minHeight: contentHeight }}>
+                  {flatTasks.map((task, i) => {
+                    const dur = durationOf(task);
+                    const ms = isMilestone(task);
+                    const marked = !!task.critical;
+                    const crit = showCritical && schedule.critical.has(task.id);
+                    const isHover = hoverId === task.id;
+                    return (
+                      <div key={task.id}
+                           draggable
+                           onDragStart={(e) => { setDraggingRowId(task.id); e.dataTransfer.setData('text/plain', task.id); e.dataTransfer.effectAllowed = 'move'; }}
+                           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+                           onDrop={(e) => handleRowDrop(e, task.id)}
+                           onContextMenu={(e) => handleContextMenu(e, task.id)}
+                           onMouseEnter={() => setHoverId(task.id)}
+                           onMouseLeave={() => setHoverId(null)}
+                           onClick={() => onEditTask(task)}
+                           className={`flex items-center border-b border-gray-100 dark:border-gray-800/80 text-xs cursor-pointer transition-colors ${draggingRowId === task.id ? 'opacity-40' : ''} ${isHover ? 'bg-blue-50/70 dark:bg-blue-500/[0.07]' : ''}`}
+                           style={{ height: ROW_HEIGHT }}>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-400 cursor-grab active:cursor-grabbing" style={{ width: colWidths.index }}>
+                          <span className="text-[11px] tabular-nums">{i + 1}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 px-2.5 overflow-hidden" style={{ width: colWidths.name }}>
+                          {crit && <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-rose-500" title="关键工作" />}
+                          {ms && <Icons.Flag size={11} className="shrink-0 text-amber-500" />}
+                          <span className="truncate font-medium text-gray-700 dark:text-gray-200">
+                            <Highlight text={task.name} query={searchQuery} />
+                          </span>
+                        </div>
+                        <div className="flex items-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 px-2.5 text-gray-500 dark:text-gray-400" style={{ width: colWidths.content }}>
+                          <span className="truncate"><Highlight text={task.content || '—'} query={searchQuery} /></span>
+                        </div>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-600 dark:text-gray-400 tabular-nums" style={{ width: colWidths.start }}>{formatDate(task.start)}</div>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-600 dark:text-gray-400 tabular-nums" style={{ width: colWidths.end }}>{formatDate(task.end)}</div>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-500 dark:text-gray-400 tabular-nums" style={{ width: colWidths.duration }}>
+                          {ms ? <span className="text-amber-600 dark:text-amber-400">节点</span> : `${dur}天`}
+                        </div>
+                        <div className="flex items-center justify-center h-full shrink-0" style={{ width: colWidths.critical }}>
+                          <input type="checkbox"
+                                 checked={marked}
+                                 onClick={(e) => e.stopPropagation()}
+                                 onChange={(e) => onTaskUpdate({ ...task, critical: e.target.checked })}
+                                 title="勾选后，该任务按「关键工作」在甘特图与网络图中标红"
+                                 className="w-[15px] h-[15px] rounded accent-rose-500 cursor-pointer" />
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* 新建任务行 */}
+                  <div onClick={() => onEditTask(null)}
+                       className="flex items-center border-b border-transparent cursor-pointer text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-500/5 transition-colors"
+                       style={{ height: ROW_HEIGHT }}>
+                    <div className="h-full shrink-0 border-r border-transparent" style={{ width: colWidths.index }} />
+                    <div className="flex items-center gap-1.5 h-full shrink-0 border-r border-transparent pl-2.5 text-xs" style={{ width: colWidths.name }}>
+                      <Icons.Plus size={13} /> 新建任务
+                    </div>
+                    <div className="h-full shrink-0" style={{ width: colWidths.content }} />
+                    <div className="h-full shrink-0" style={{ width: colWidths.start }} />
+                    <div className="h-full shrink-0" style={{ width: colWidths.end }} />
+                    <div className="h-full shrink-0" style={{ width: colWidths.duration }} />
+                    <div className="h-full shrink-0" style={{ width: colWidths.critical }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 侧栏宽度拖拽条 */}
+            <div className="absolute top-0 bottom-0 w-[3px] -ml-[1px] cursor-col-resize z-40 hover:bg-blue-400/60 transition-colors"
+                 style={{ left: sidebarWidth }}
+                 onMouseDown={startSidebarResize}
+                 onDoubleClick={() => setSidebarWidth(640)}
+                 title="拖动调整任务表宽度（双击复位）" />
+
+            {/* ============ 右侧：甘特图 ============ */}
+            <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-notion-bgDark relative">
+              {/* 日历表头 */}
+              <div ref={chartHeadRef} className="h-[56px] shrink-0 overflow-x-auto overflow-y-hidden no-scrollbar border-b border-notion-border dark:border-notion-borderDark bg-notion-sidebar dark:bg-notion-sidebarDark z-10">
+                <div className="relative h-full" style={{ width: chartWidth }}>
+                  {/* 第一行：月份分组（月视图为年份分组） */}
+                  <div className="absolute top-0 left-0 right-0 h-[26px]">
+                    {topSegments.map((s) => (
+                      <div key={s.key} className="absolute top-0 h-full flex items-center pl-2 overflow-hidden border-r border-notion-border dark:border-notion-borderDark"
+                           style={{ left: s.left, width: s.width }}>
+                        <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-200 whitespace-nowrap">{s.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* 第二行：时间刻度（日/周/月每格都显示完整时间） */}
+                  <div className="absolute left-0 right-0 bottom-0 h-[30px]">
+                    {viewMode !== 'Month' && dayFlags.filter((t) => t.weekend).map((t) => (
+                      <div key={'hw' + t.idx} className="absolute top-0 bottom-0 bg-slate-200/50 dark:bg-white/[0.045]" style={{ left: t.left, width: dayWidth }} />
+                    ))}
+                    {unitCells.map((c) => (
+                      <div key={'ht' + c.key}
+                           title={c.full}
+                           className="absolute top-0 bottom-0 border-l border-gray-300 dark:border-gray-600 overflow-hidden"
+                           style={{ left: c.left, width: c.width }}>
+                        {viewMode === 'Day' ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center leading-none gap-[3px]">
+                            <span className="text-[11px] font-medium text-gray-600 dark:text-gray-300 tabular-nums">{c.label}</span>
+                            {dayWidth >= 30 && <span className="text-[9px] text-gray-400 dark:text-gray-500">{c.sub}</span>}
+                          </div>
+                        ) : (
+                          <div className="h-full flex items-center pl-1.5">
+                            <span className="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap tabular-nums">
+                              {c.width >= 92 ? c.label : (c.short || c.label)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {/* 表头最右竖线（与图体右端竖线、时间轴右边界对齐） */}
+                    <div className="absolute top-0 bottom-0 bg-notion-border dark:bg-notion-borderDark" style={{ left: chartWidth - 1, width: 1 }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* 图体 */}
+              <div ref={chartBodyRef} className="flex-1 overflow-auto custom-scrollbar" onScroll={onChartScroll}>
+                <div className="relative" style={{ width: chartWidth, height: contentHeight }}>
+                  {/* 网格（高度严格 = 任务行数 × 行高，与左侧任务表对齐） */}
+                  <div className="absolute top-0 left-0 right-0 pointer-events-none" style={{ height: gridHeight }}>
+                    {viewMode !== 'Month' && dayFlags.filter((t) => t.weekend).map((t) => (
+                      <div key={'gw' + t.idx} className="absolute top-0 bottom-0 bg-slate-100/80 dark:bg-white/[0.025]" style={{ left: t.left, width: dayWidth }} />
+                    ))}
+                    {unitCells.map((c) => (
+                      <div key={'gl' + c.key}
+                           className={`absolute top-0 bottom-0 border-l ${viewMode === 'Day' ? 'border-gray-200/80 dark:border-gray-700/60' : 'border-gray-300/90 dark:border-gray-600/80'}`}
+                           style={{ left: c.left }} />
+                    ))}
+                    {flatTasks.map((t, i) => (
+                      <div key={'gh' + t.id}
+                           className={`absolute left-0 right-0 border-t border-gray-100 dark:border-gray-800/70 ${hoverId === t.id ? 'bg-blue-50/70 dark:bg-blue-500/[0.07]' : ''}`}
+                           style={{ top: i * ROW_HEIGHT, height: ROW_HEIGHT }} />
+                    ))}
+                    {/* 外框补齐：最下横线（最后一行的下边框，与左侧任务行对齐）+ 最右竖线 */}
+                    <div className="absolute left-0 right-0 bg-notion-border dark:bg-notion-borderDark" style={{ top: gridHeight - 1, height: 1 }} />
+                    <div className="absolute top-0 bottom-0 bg-notion-border dark:bg-notion-borderDark" style={{ left: chartWidth - 1, width: 1 }} />
+                  </div>
+
+                  {/* 依赖连线 */}
+                  <svg className="absolute inset-0 pointer-events-none z-[5] text-slate-400 dark:text-slate-500"
+                       width={chartWidth} height={contentHeight}>
+                    <defs>
+                      <marker id="arrowNorm" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
+                        <polygon points="0 0, 9 3.5, 0 7" fill="#94a3b8" />
+                      </marker>
+                      <marker id="arrowCrit" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
+                        <polygon points="0 0, 9 3.5, 0 7" fill="#f43f5e" />
+                      </marker>
+                    </defs>
+                    {renderDependencies()}
+                  </svg>
+
+                  {/* 今天高亮列 */}
+                  {showToday && (
+                    <div className="absolute top-0 bg-rose-500/[0.07] pointer-events-none z-[6]" style={{ left: todayIdx * dayWidth, width: dayWidth, height: gridHeight }}>
+                      <div className="absolute inset-y-0 left-0 w-px bg-rose-400/70" />
+                    </div>
+                  )}
+                  {showToday && (
+                    <div className="absolute z-[22] pointer-events-none -translate-x-1/2" style={{ left: todayIdx * dayWidth + dayWidth / 2, top: 3 }}>
+                      <span className="block bg-rose-500 text-white text-[9px] font-medium px-1.5 py-[1px] rounded-full shadow-sm whitespace-nowrap">今天</span>
+                    </div>
+                  )}
+
+                  {/* 任务条 */}
+                  {flatTasks.map((task) => {
+                    const startIdx = diffDays(task.start, dateRange.start);
+                    const dur = Math.max(1, diffDays(task.end, task.start) + 1);
+                    const left = startIdx * dayWidth;
+                    const top = task.index * ROW_HEIGHT;
+                    const ms = isMilestone(task);
+                    const crit = showCritical && schedule.critical.has(task.id);
+                    const pct = clamp(task.progress || 0, 0, 100);
+                    const isHover = hoverId === task.id;
+                    const tip = [
+                      task.name,
+                      task.content || '',
+                      `${formatDate(task.start)} ~ ${formatDate(task.end)}（${ms ? '里程碑' : dur + ' 天'}）`,
+                      `进度 ${pct}%`,
+                      task.critical ? '★ 关键工作' : '',
+                    ].filter(Boolean).join('\n');
+
+                    if (ms) {
+                      return (
+                        <div key={task.id} className="absolute z-10"
+                             style={{ left: Math.max(0, left + dayWidth / 2 - 9), top: top + ROW_HEIGHT / 2 - 9, width: 18, height: 18 }}
+                             onMouseEnter={() => setHoverId(task.id)} onMouseLeave={() => setHoverId(null)}>
+                          <div title={tip}
+                               className={`w-[18px] h-[18px] rotate-45 rounded-[3px] shadow-sm border cursor-move transition-transform hover:scale-110 ${crit ? 'bg-rose-500 border-rose-600' : 'bg-amber-400 border-amber-500'}`}
+                               onMouseDown={(e) => startBarDrag(e, task, 'move')} />
+                          <span className={`absolute left-6 top-1/2 -translate-y-1/2 text-[11px] whitespace-nowrap pointer-events-none ${crit ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-gray-600 dark:text-gray-300'}`}>
+                            {task.name}
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    const barW = Math.max(8, dur * dayWidth);
+                    return (
+                      <div key={task.id} className="absolute z-10 group"
+                           style={{ left, top: top + 7, width: barW, height: ROW_HEIGHT - 14 }}
+                           onMouseEnter={() => setHoverId(task.id)} onMouseLeave={() => setHoverId(null)}>
+                        <div title={tip}
+                             onMouseDown={(e) => startBarDrag(e, task, 'move')}
+                             className={`h-full rounded-[5px] relative overflow-hidden border cursor-move transition-all ${isHover ? 'shadow-md' : 'shadow-sm'} ${
+                               crit
+                                 ? `bg-rose-100 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 ${isHover ? 'ring-2 ring-rose-300 dark:ring-rose-500/40' : ''}`
+                                 : `bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/50 ${isHover ? 'ring-2 ring-blue-300 dark:ring-blue-500/40' : ''}`
+                             }`}>
+                          <div className={`absolute inset-y-0 left-0 ${crit ? 'bg-gradient-to-r from-rose-500 to-red-500' : 'bg-gradient-to-r from-blue-500 to-indigo-500'}`}
+                               style={{ width: pct + '%' }} />
+                          {barW >= 34 && pct >= 18 && (
+                            <span className="absolute inset-y-0 left-0 flex items-center pl-1.5 text-[10px] font-semibold text-white tabular-nums pointer-events-none">{pct}%</span>
+                          )}
+                          {dayWidth >= 16 && barW >= 30 && (
+                            <React.Fragment>
+                              <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-w-resize hover:bg-white/40 opacity-0 group-hover:opacity-100 transition-opacity"
+                                   onMouseDown={(e) => startBarDrag(e, task, 'resize-left')} />
+                              <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-e-resize hover:bg-white/40 opacity-0 group-hover:opacity-100 transition-opacity"
+                                   onMouseDown={(e) => startBarDrag(e, task, 'resize-right')} />
+                            </React.Fragment>
+                          )}
+                        </div>
+                        {/* 条右侧信息 */}
+                        <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-[11px] whitespace-nowrap pointer-events-none">
+                          <span className={crit ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-gray-700 dark:text-gray-200'}>{task.name}</span>
+                          <span className="text-gray-400 dark:text-gray-500 tabular-nums">{pct}%</span>
+                          {crit && <span className="text-[9px] px-1 rounded bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-300">关键</span>}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* 右键菜单 */}
+            {contextMenu && (
+              <div className="animate-pop fixed bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-[90] py-1 w-[160px]"
+                   style={{ left: contextMenu.x, top: contextMenu.y }}>
+                <button className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                        onClick={() => { const t = tasks.find((x) => x.id === contextMenu.taskId); if (t) onEditTask(t); setContextMenu(null); }}>
+                  <Icons.Pencil size={14} /> 编辑任务
+                </button>
+                <div className="h-px bg-gray-100 dark:bg-gray-700 my-1" />
+                <button className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                        onClick={() => { onMoveTask(contextMenu.taskId, 'up'); setContextMenu(null); }}>
+                  <Icons.ArrowUp size={14} /> 上移一行
+                </button>
+                <button className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                        onClick={() => { onMoveTask(contextMenu.taskId, 'down'); setContextMenu(null); }}>
+                  <Icons.ArrowDown size={14} /> 下移一行
+                </button>
+                <div className="h-px bg-gray-100 dark:bg-gray-700 my-1" />
+                <button className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10 flex items-center gap-2"
+                        onClick={() => { onDeleteTask(contextMenu.taskId); setContextMenu(null); }}>
+                  <Icons.Trash2 size={14} /> 删除任务
+                </button>
+              </div>
+            )}
+          </div>
+          </div>
+        );
+      };
+
+      // ============================================================
+      // 9. 组件: 网络图（单代号网络计划）
+      // ============================================================
+      const NetworkDiagram = ({ tasks, onTaskUpdate, onEditTask, onTaskLayout, schedule, showCritical, searchQuery, dimmedIds, onToast }) => {
+        const [offset, setOffset] = useState({ x: 0, y: 0 });
+        const [zoom, setZoom] = useState(1);
+        const [panning, setPanning] = useState(false);
+        const [dragNodeId, setDragNodeId] = useState(null);
+        const [connectingSourceId, setConnectingSourceId] = useState(null);
+        const [tempMousePos, setTempMousePos] = useState(null);
+        const [snapLines, setSnapLines] = useState(null);
+        const [hoverNodeId, setHoverNodeId] = useState(null);
+
+        const containerRef = useRef(null);
+        const panRef = useRef(null);
+        const nodeDragRef = useRef(null);
+        const connectRef = useRef(null);
+
+        const zoomRef = useRef(zoom); zoomRef.current = zoom;
+        const offsetRef = useRef(offset); offsetRef.current = offset;
+        const live = useRef({}); live.current = { tasks, onTaskUpdate, onToast };
+        const SNAP = 12;
+
+        // 屏幕坐标 -> 画布坐标
+        const toWorld = (clientX, clientY) => {
+          const el = containerRef.current;
+          if (!el) return { x: 0, y: 0 };
+          const rect = el.getBoundingClientRect();
+          const o = offsetRef.current, z = zoomRef.current;
+          return { x: (clientX - rect.left - o.x) / z, y: (clientY - rect.top - o.y) / z };
+        };
+
+        const zoomAt = useCallback((factor, clientX, clientY) => {
+          const el = containerRef.current;
+          if (!el) return;
+          const rect = el.getBoundingClientRect();
+          const px = clientX - rect.left, py = clientY - rect.top;
+          const z = zoomRef.current;
+          const nz = clamp(z * factor, 0.22, 2.5);
+          if (Math.abs(nz - z) < 0.001) return;
+          const o = offsetRef.current;
+          setOffset({ x: px - (px - o.x) * (nz / z), y: py - (py - o.y) * (nz / z) });
+          setZoom(nz);
+        }, []);
+
+        const fitView = useCallback(() => {
+          const el = containerRef.current;
+          const list = live.current.tasks;
+          if (!el || !list.length) return;
+          const rect = el.getBoundingClientRect();
+          const pad = 56;
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          list.forEach((t) => {
+            const x = t.networkX || 0, y = t.networkY || 0;
+            minX = Math.min(minX, x); minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x + NODE_W); maxY = Math.max(maxY, y + NODE_H);
+          });
+          const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
+          const z = clamp(Math.min((rect.width - pad * 2) / bw, (rect.height - pad * 2) / bh), 0.22, 1.1);
+          setZoom(z);
+          setOffset({ x: (rect.width - bw * z) / 2 - minX * z, y: (rect.height - bh * z) / 2 - minY * z });
+        }, []);
+
+        const resetView = useCallback(() => {
+          setZoom(1);
+          setOffset({ x: 40, y: 20 });
+        }, []);
+
+        // 每次进入网络计划图视图时自动适应，保证所有节点都在画面内
+        useEffect(() => {
+          const timer = setTimeout(() => fitView(), 80);
+          return () => clearTimeout(timer);
+        }, [fitView]);
+
+        // 滚轮：Ctrl/⌘+滚轮缩放，普通滚轮平移
+        useEffect(() => {
+          const el = containerRef.current;
+          if (!el) return;
+          const onWheel = (e) => {
+            e.preventDefault();
+            if (e.ctrlKey || e.metaKey) {
+              zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
+            } else {
+              setOffset((o) => ({ x: o.x - (e.deltaX || 0), y: o.y - e.deltaY }));
+            }
+          };
+          el.addEventListener('wheel', onWheel, { passive: false });
+          return () => el.removeEventListener('wheel', onWheel);
+        }, [zoomAt]);
+
+        // 全局鼠标（平移 / 拖动节点 / 连线预览）
+        useEffect(() => {
+          const onMove = (e) => {
+            const st = live.current;
+            if (panRef.current) {
+              const dx = e.clientX - panRef.current.x;
+              const dy = e.clientY - panRef.current.y;
+              panRef.current = { x: e.clientX, y: e.clientY };
+              setOffset((o) => ({ x: o.x + dx, y: o.y + dy }));
+            }
+            if (nodeDragRef.current) {
+              const d = nodeDragRef.current;
+              const z = zoomRef.current;
+              let nx = d.originX + (e.clientX - d.startX) / z;
+              let ny = d.originY + (e.clientY - d.startY) / z;
+              let snap = null;
+              st.tasks.forEach((o) => {
+                if (o.id === d.id) return;
+                const ox = o.networkX || 0, oy = o.networkY || 0;
+                if (Math.abs(nx - ox) < SNAP) { nx = ox; snap = Object.assign(snap || {}, { x: ox }); }
+                if (Math.abs(ny - oy) < SNAP) { ny = oy; snap = Object.assign(snap || {}, { y: oy }); }
+              });
+              setSnapLines(snap);
+              const t = st.tasks.find((x) => x.id === d.id);
+              if (t && ((t.networkX || 0) !== nx || (t.networkY || 0) !== ny)) {
+                st.onTaskUpdate({ ...t, networkX: nx, networkY: ny });
+              }
+            }
+            if (connectRef.current) setTempMousePos(toWorld(e.clientX, e.clientY));
+          };
+          const onUp = () => {
+            panRef.current = null; setPanning(false);
+            nodeDragRef.current = null; setDragNodeId(null); setSnapLines(null);
+            if (connectRef.current) { connectRef.current = null; setConnectingSourceId(null); setTempMousePos(null); }
+          };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+          return () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+          };
+        }, []);
+
+        const onCanvasDown = (e) => {
+          if (e.button !== 0) return;
+          if (dragNodeId || connectRef.current) return;
+          panRef.current = { x: e.clientX, y: e.clientY };
+          setPanning(true);
+        };
+
+        const onNodeDown = (e, task) => {
+          if (e.button !== 0) return;
+          e.stopPropagation();
+          if (connectRef.current) return;
+          nodeDragRef.current = { id: task.id, startX: e.clientX, startY: e.clientY, originX: task.networkX || 0, originY: task.networkY || 0 };
+          setDragNodeId(task.id);
+        };
+
+        const onConnectorDown = (e, taskId) => {
+          e.stopPropagation();
+          e.preventDefault();
+          connectRef.current = taskId;
+          setConnectingSourceId(taskId);
+          setTempMousePos(toWorld(e.clientX, e.clientY));
+        };
+
+        const onNodeUp = (e, target) => {
+          const src = connectRef.current;
+          if (!src) return;
+          e.stopPropagation();
+          connectRef.current = null;
+          setConnectingSourceId(null);
+          setTempMousePos(null);
+          const st = live.current;
+          const srcTask = st.tasks.find((t) => t.id === src);
+          if (src === target.id) return;
+          if ((target.dependencies || []).includes(src)) { st.onToast('该依赖关系已存在', 'warn'); return; }
+          if (hasCircularDependency(src, target.id, st.tasks)) { st.onToast('无法连接：会形成循环依赖', 'error'); return; }
+          st.onTaskUpdate({ ...target, dependencies: [...(target.dependencies || []), src] });
+          st.onToast(`已建立依赖：${srcTask ? srcTask.name : ''} → ${target.name}`, 'success');
+        };
+
+        // 连线路径
+        const buildPath = (from, to) => {
+          const sx = (from.networkX || 0) + NODE_W;
+          const sy = (from.networkY || 0) + NODE_H / 2;
+          const ex = (to.networkX || 0);
+          const ey = (to.networkY || 0) + NODE_H / 2;
+          if (ex - sx >= 30) {
+            const c = Math.max(20, Math.min(80, (ex - sx) / 2));
+            return `M ${sx} ${sy} C ${sx + c} ${sy}, ${ex - c} ${ey}, ${ex} ${ey}`;
+          }
+          const elbow = sx + 22;
+          return `M ${sx} ${sy} C ${sx + 14} ${sy}, ${elbow} ${sy}, ${elbow} ${(sy + ey) / 2} C ${elbow} ${ey}, ${ex - 14} ${ey}, ${ex} ${ey}`;
+        };
+
+        const renderConnections = () => tasks.flatMap((task) =>
+          (task.dependencies || []).map((depId) => {
+            const dep = tasks.find((t) => t.id === depId);
+            if (!dep) return null;
+            const crit = showCritical && schedule.criticalEdges.has(depId + '|' + task.id);
+            return (
+              <path key={depId + '-' + task.id}
+                    d={buildPath(dep, task)}
+                    fill="none"
+                    stroke={crit ? '#f43f5e' : 'currentColor'}
+                    strokeWidth={crit ? 2.2 : 1.5}
+                    strokeDasharray={crit ? undefined : '6 4'}
+                    markerEnd={crit ? 'url(#netArrowCrit)' : 'url(#netArrowNormal)'} />
+            );
+          })
+        );
+
+        const renderTempConnection = () => {
+          if (!connectingSourceId || !tempMousePos) return null;
+          const src = tasks.find((t) => t.id === connectingSourceId);
+          if (!src) return null;
+          const sx = (src.networkX || 0) + NODE_W;
+          const sy = (src.networkY || 0) + NODE_H / 2;
+          return (
+            <path d={`M ${sx} ${sy} L ${tempMousePos.x} ${tempMousePos.y}`}
+                  fill="none" stroke="#3b82f6" strokeWidth="2" strokeDasharray="5 4"
+                  markerEnd="url(#netArrowActive)" className="pointer-events-none" />
+          );
+        };
+
+        return (
+          <div ref={containerRef}
+               className="w-full h-full overflow-hidden relative select-none"
+               style={{ cursor: panning ? 'grabbing' : 'grab', background: 'transparent' }}
+               onMouseDown={onCanvasDown}>
+            {/* 网格背景 */}
+            <div className="absolute inset-0 pointer-events-none opacity-[0.14] dark:opacity-[0.10]"
+                 style={{
+                   backgroundImage: 'radial-gradient(currentColor 1px, transparent 1px)',
+                   backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
+                   backgroundPosition: `${offset.x}px ${offset.y}px`,
+                 }} />
+
+            {/* 画布内容 */}
+            <div className="absolute inset-0 w-full h-full pointer-events-none"
+                 style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
+              <svg className="absolute inset-0 overflow-visible pointer-events-none text-slate-400 dark:text-slate-500">
+                <defs>
+                  <marker id="netArrowNormal" markerWidth="10" markerHeight="7" refX="9.5" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+                  </marker>
+                  <marker id="netArrowCrit" markerWidth="10" markerHeight="7" refX="9.5" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#f43f5e" />
+                  </marker>
+                  <marker id="netArrowActive" markerWidth="10" markerHeight="7" refX="9.5" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6" />
+                  </marker>
+                </defs>
+                {renderConnections()}
+                {renderTempConnection()}
+              </svg>
+
+              {/* 节点 */}
+              {tasks.map((task) => {
+                const crit = showCritical && schedule.critical.has(task.id);
+                const ms = isMilestone(task);
+                const pct = clamp(task.progress || 0, 0, 100);
+                const marked = !!task.critical;
+                const succCount = tasks.filter((t) => (t.dependencies || []).includes(task.id)).length;
+                const isDim = dimmedIds && dimmedIds.has(task.id);
+                const isDrag = dragNodeId === task.id;
+                const isConnect = connectingSourceId === task.id;
+                const isHover = hoverNodeId === task.id;
+                return (
+                  <div key={task.id}
+                       className={`absolute rounded-xl border bg-white dark:bg-notion-sidebarDark pointer-events-auto transition-shadow
+                         ${isDim ? 'opacity-25' : 'opacity-100'}
+                         ${isDrag ? 'shadow-2xl' : 'shadow-sm'}
+                         ${crit ? 'border-rose-300 dark:border-rose-500/60' : 'border-notion-border dark:border-notion-borderDark'}
+                         ${isHover ? 'shadow-lg ring-2 ' + (crit ? 'ring-rose-300/70 dark:ring-rose-500/40' : 'ring-blue-300/70 dark:ring-blue-500/40') : ''}
+                         ${isConnect ? 'ring-2 ring-blue-500' : ''}`}
+                       style={{
+                         left: task.networkX || 0,
+                         top: task.networkY || 0,
+                         width: NODE_W,
+                         height: NODE_H,
+                         zIndex: isDrag ? 60 : (isHover ? 40 : 10),
+                       }}
+                       onMouseDown={(e) => onNodeDown(e, task)}
+                       onMouseUp={(e) => onNodeUp(e, task)}
+                       onDoubleClick={() => onEditTask(task)}
+                       onMouseEnter={() => setHoverNodeId(task.id)}
+                       onMouseLeave={() => setHoverNodeId(null)}
+                       title={`${task.name}\n双击编辑 · 拖动移动 · 悬停右侧圆点连线`}>
+                    <div className={`h-1.5 w-full rounded-t-xl ${crit ? 'bg-rose-500' : ms ? 'bg-amber-400' : 'bg-blue-500'}`} />
+                    <div className="px-3 pt-2 pb-2.5 flex flex-col h-[calc(100%-6px)]">
+                      <div className="flex items-start gap-1.5">
+                        <h3 className="flex-1 font-semibold text-[12.5px] leading-snug text-gray-800 dark:text-gray-100"
+                            style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          <Highlight text={task.name} query={searchQuery} />
+                        </h3>
+                        {ms && <Icons.Flag size={12} className="shrink-0 mt-[2px] text-amber-500" />}
+                      </div>
+
+                      <div className="mt-auto space-y-1.5">
+                        <div className="flex items-center justify-between text-[10px] tabular-nums text-gray-500 dark:text-gray-400">
+                          <span>{formatDate(task.start)}</span>
+                          <span className="text-gray-300 dark:text-gray-600">→</span>
+                          <span>{formatDate(task.end)}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex-1 h-1.5 rounded-full bg-gray-100 dark:bg-gray-700 overflow-hidden">
+                            <div className={`h-full rounded-full ${crit ? 'bg-rose-500' : 'bg-blue-500'}`} style={{ width: pct + '%' }} />
+                          </div>
+                          <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 tabular-nums w-7 text-right">{pct}%</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[9px] text-gray-400 dark:text-gray-500">
+                          <span>{ms ? '里程碑' : durationOf(task) + ' 天'}</span>
+                          <span>{marked ? '★ 关键 · ' : ''}前{(task.dependencies || []).length}/后{succCount}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 连线手柄 */}
+                    <div className="absolute right-[-8px] top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white dark:bg-gray-700 border-2 border-blue-500 cursor-crosshair hover:scale-125 transition-all z-20 shadow flex items-center justify-center"
+                         style={{ opacity: isHover || isConnect ? 1 : 0 }}
+                         onMouseDown={(e) => onConnectorDown(e, task.id)}
+                         title="拖动到另一个节点，建立依赖关系">
+                      <div className="w-1.5 h-1.5 bg-blue-500 rounded-full pointer-events-none" />
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* 吸附参考线 */}
+              {snapLines && snapLines.x !== undefined && (
+                <div className="absolute w-px bg-rose-400/80 z-40 pointer-events-none"
+                     style={{ left: snapLines.x, top: -10000, height: 20000 }} />
+              )}
+              {snapLines && snapLines.y !== undefined && (
+                <div className="absolute h-px bg-rose-400/80 z-40 pointer-events-none"
+                     style={{ top: snapLines.y, left: -10000, width: 20000 }} />
+              )}
+            </div>
+
+            {/* 工具条 */}
+            <div className="absolute top-2.5 right-2.5 flex items-center gap-0.5 bg-white/95 dark:bg-gray-800/95 backdrop-blur rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm px-1 py-1 z-40"
+                 onMouseDown={(e) => e.stopPropagation()}>
+              <button onClick={() => onTaskLayout()} title="自动布局（按依赖层级重新排布）"
+                      className="px-2 py-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 flex items-center gap-1 text-[11px] transition">
+                <Icons.LayoutGrid size={13} /> 自动布局
+              </button>
+              <button onClick={fitView} title="适应视图"
+                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition">
+                <Icons.Maximize2 size={13} />
+              </button>
+              <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5" />
+              <button onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAt(1 / 1.15, r.left + r.width / 2, r.top + r.height / 2); }}
+                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition" title="缩小">
+                <Icons.ZoomOut size={13} />
+              </button>
+              <span className="text-[10px] tabular-nums text-gray-500 dark:text-gray-400 w-9 text-center">{Math.round(zoom * 100)}%</span>
+              <button onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAt(1.15, r.left + r.width / 2, r.top + r.height / 2); }}
+                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition" title="放大">
+                <Icons.ZoomIn size={13} />
+              </button>
+              <button onClick={resetView} title="重置视图"
+                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition">
+                <Icons.RotateCcw size={13} />
+              </button>
+            </div>
+
+            {/* 图例 */}
+            <div className="absolute bottom-3 left-3 flex items-center gap-3 text-[10px] text-gray-500 dark:text-gray-400 bg-white/85 dark:bg-gray-800/85 backdrop-blur px-2.5 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 pointer-events-none z-30">
+              <span className="flex items-center gap-1"><span className="w-4 h-0 border-t-2 border-dashed border-slate-400 inline-block" /> 依赖关系</span>
+              {showCritical && <span className="flex items-center gap-1"><span className="w-4 h-0 border-t-2 border-rose-500 inline-block" /> 关键线路</span>}
+              <span className="flex items-center gap-1"><span className="w-[10px] h-[10px] rotate-45 rounded-[2px] bg-amber-400 inline-block" /> 里程碑</span>
+              <span className="text-gray-400 dark:text-gray-500">拖动空白平移 · Ctrl+滚轮缩放</span>
+            </div>
+          </div>
+        );
+      };
+
+      // ============================================================
+      // 10. 初始数据（示例：地铁车站 BAS / 门禁系统施工进度）
+      //     日期相对"今天"生成，方便直接看到进度与"今天"标记线
+      // ============================================================
+      const T0 = startOfDay(new Date());
+      const D = (offset) => addDays(T0, offset);
+
+      // critical: true = 该任务为「关键工作」（可在任务表「关键」列勾选 / 取消）
+      const INITIAL_TASKS = [
+        { id: 't1', name: '施工准备', content: '场地移交、材料报审、技术交底', start: D(-14), end: D(-12), progress: 100, dependencies: [], critical: true, order: 0 },
+        { id: 't2', name: '预埋管与桥架安装', content: 'BAS 桥架敷设、预埋管疏通', start: D(-11), end: D(-4), progress: 85, dependencies: ['t1'], critical: true, order: 1 },
+        { id: 't3', name: '线缆敷设与端接', content: '网线、电源线敷设及端接', start: D(-3), end: D(4), progress: 60, dependencies: ['t2'], order: 2 },
+        { id: 't4', name: 'BAS 设备安装', content: '温湿度/CO 传感器、DDC 箱、执行器', start: D(-3), end: D(5), progress: 35, dependencies: ['t2'], critical: true, order: 3 },
+        { id: 't5', name: '门禁设备安装', content: '读卡器、电锁、门磁、就地控制器', start: D(-3), end: D(4), progress: 20, dependencies: ['t2'], order: 4 },
+        { id: 't6', name: '单机调试', content: '点对点校线、单体功能测试', start: D(6), end: D(10), progress: 0, dependencies: ['t3', 't4', 't5'], critical: true, order: 5 },
+        { id: 't7', name: '系统联调', content: '与综合监控联调、消防联动试验', start: D(11), end: D(17), progress: 0, dependencies: ['t6'], critical: true, order: 6 },
+        { id: 't8', name: '竣工验收', content: '资料移交、预验收问题整改闭环', start: D(18), end: D(18), progress: 0, dependencies: ['t7'], milestone: true, critical: true, order: 7 },
+      ];
+
+      const VIEW_MODES = [
+        { value: 'Day', label: '日' },
+        { value: 'Week', label: '周' },
+        { value: 'Month', label: '月' },
+      ];
+
+      // 导出前把内部滚动容器"撑开"，解决长图被裁切的问题
+      const expandForExport = (el) => {
+        const styles = [];
+        const scrolls = [];
+        const nodes = [el].concat(Array.from(el.querySelectorAll('*')));
+        const setStyle = (node, prop, val) => {
+          styles.push([node, prop, node.style[prop]]);
+          node.style[prop] = val;
+        };
+
+        // 1) 归零滚动 + 展开 overflow
+        nodes.forEach((node) => {
+          if (node.scrollTop || node.scrollLeft) {
+            scrolls.push([node, node.scrollTop, node.scrollLeft]);
+            node.scrollTop = 0;
+            node.scrollLeft = 0;
+          }
+          const cs = window.getComputedStyle(node);
+          if (/hidden|auto|scroll/.test(cs.overflow + cs.overflowX + cs.overflowY)) {
+            setStyle(node, 'overflow', 'visible');
+            setStyle(node, 'overflowX', 'visible');
+            setStyle(node, 'overflowY', 'visible');
+          }
+        });
+
+        // 2) 自底向上按真实内容尺寸撑开（先子后父）
+        for (let i = nodes.length - 1; i >= 1; i--) {
+          const n = nodes[i];
+          if (n.scrollWidth > n.clientWidth + 1) {
+            setStyle(n, 'width', n.scrollWidth + 'px');
+            setStyle(n, 'flex', 'none');
+          }
+          if (n.scrollHeight > n.clientHeight + 1) {
+            setStyle(n, 'height', n.scrollHeight + 'px');
+          }
+        }
+
+        // 3) 计算整体内容外框并撑开根元素
+        const rootRect = el.getBoundingClientRect();
+        let right = rootRect.right, bottom = rootRect.bottom;
+        nodes.forEach((n) => {
+          const r = n.getBoundingClientRect();
+          if (r.width || r.height) {
+            if (r.right > right) right = r.right;
+            if (r.bottom > bottom) bottom = r.bottom;
+          }
+        });
+        const fullW = Math.max(1, Math.ceil(right - rootRect.left));
+        const fullH = Math.max(1, Math.ceil(bottom - rootRect.top));
+        setStyle(el, 'width', fullW + 'px');
+        setStyle(el, 'height', fullH + 'px');
+        setStyle(el, 'flex', 'none');
+
+        return {
+          fullW,
+          fullH,
+          restore: () => {
+            for (let i = styles.length - 1; i >= 0; i--) {
+              const [node, prop, val] = styles[i];
+              node.style[prop] = val;
+            }
+            scrolls.forEach(([node, top, left]) => { node.scrollTop = top; node.scrollLeft = left; });
+          },
+        };
+      };
+
+      // ============================================================
+      // 11. 主应用
+      // ============================================================
+      const App = () => {
+        const [tasks, setTasks] = useState(() => calculateNetworkLayout(INITIAL_TASKS));
+        const [viewMode, setViewMode] = useState('Day');
+        const [isModalOpen, setIsModalOpen] = useState(false);
+        const [currentTask, setCurrentTask] = useState(undefined);
+        const [searchQuery, setSearchQuery] = useState('');
+        const [darkMode, setDarkMode] = useState(() => !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
+        const [projectTitle, setProjectTitle] = useState('地铁车站 BAS 及门禁系统工程进度计划');
+        const [showCritical, setShowCritical] = useState(true);
+        // 当前主视图：'gantt' = 施工进度计划图，'network' = 网络计划图（两视图共用同一份 tasks，切换不重置数据）
+        const [activeView, setActiveView] = useState('gantt');
+        // 任务表列宽 / 侧栏宽度提升到 App，切换视图后不丢失
+        const [sidebarWidth, setSidebarWidth] = useState(640);
+        const [colWidths, setColWidths] = useState({ index: 44, name: 176, content: 132, start: 88, end: 88, duration: 56, critical: 56 });
+        const [exportOpen, setExportOpen] = useState(false);
+        const [toast, setToast] = useState(null);
+        const [confirmState, setConfirmState] = useState(null);
+
+        const titleRef = useRef(null);
+        const toastTimer = useRef(null);
+
+        const schedule = useMemo(() => computeCritical(tasks), [tasks]);
+
+        const showToast = useCallback((message, type = 'info') => {
+          setToast({ message, type });
+          if (toastTimer.current) clearTimeout(toastTimer.current);
+          toastTimer.current = setTimeout(() => setToast(null), type === 'error' ? 3800 : 2200);
+        }, []);
+
+        // 主题
+        useEffect(() => {
+          document.documentElement.classList.toggle('dark', darkMode);
+        }, [darkMode]);
+
+        // 标题输入框高度自适应
+        useEffect(() => {
+          const el = titleRef.current;
+          if (!el) return;
+          el.style.height = 'auto';
+          el.style.height = el.scrollHeight + 'px';
+        }, [projectTitle]);
+
+        // 点击外部关闭导出菜单
+        useEffect(() => {
+          if (!exportOpen) return;
+          const close = () => setExportOpen(false);
+          window.addEventListener('click', close);
+          return () => window.removeEventListener('click', close);
+        }, [exportOpen]);
+
+        // ---------- 数据操作 ----------
+        const handleTaskUpdate = useCallback((updated) => {
+          setTasks((prev) => prev.map((t) => (t.id === updated.id ? { ...t, ...updated } : t)));
+        }, []);
+
+        const handleSaveTask = (data) => {
+          if (currentTask) {
+            setTasks((prev) => prev.map((t) => (t.id === currentTask.id
+              ? { ...t, ...data, start: new Date(data.start), end: new Date(data.end) }
+              : t)));
+            showToast('任务已更新', 'success');
+          } else {
+            const maxOrder = tasks.reduce((m, t) => Math.max(m, t.order == null ? -1 : t.order), -1);
+            const firstDep = (data.dependencies || [])[0];
+            const depTask = firstDep ? tasks.find((t) => t.id === firstDep) : null;
+            const lastTask = tasks[tasks.length - 1];
+            const newTask = {
+              id: generateId(),
+              name: data.name || '新任务',
+              content: data.content || '',
+              start: new Date(data.start || new Date()),
+              end: new Date(data.end || data.start || new Date()),
+              progress: data.progress || 0,
+              dependencies: data.dependencies || [],
+              milestone: !!data.milestone,
+              critical: !!data.critical,
+              order: maxOrder + 1,
+              networkX: depTask ? depTask.networkX + NODE_W + GAP_X : (lastTask ? lastTask.networkX + 40 : 40),
+              networkY: depTask ? depTask.networkY : (lastTask ? lastTask.networkY + NODE_H + GAP_Y : 40),
+            };
+            setTasks((prev) => [...prev, newTask]);
+            showToast('任务已创建，可在网络图中点「自动布局」整理', 'success');
+          }
+          setCurrentTask(undefined);
+        };
+
+        const doDeleteTask = (id) => {
+          setTasks((prev) => prev
+            .filter((t) => t.id !== id)
+            .map((t) => (t.dependencies || []).includes(id)
+              ? { ...t, dependencies: t.dependencies.filter((d) => d !== id) }
+              : t));
+          showToast('任务已删除', 'success');
+        };
+
+        const askDeleteTask = (id) => {
+          const t = tasks.find((x) => x.id === id);
+          if (!t) return;
+          setConfirmState({
+            title: '删除任务',
+            message: `确定要删除「${t.name}」吗？\n其他任务对它的依赖关系会同时解除。`,
+            confirmText: '删除',
+            onConfirm: () => doDeleteTask(id),
+          });
+        };
+
+        const handleReorderTasks = (sourceId, targetId) => {
+          setTasks((prev) => {
+            const list = [...prev].sort((a, b) => (a.order || 0) - (b.order || 0));
+            const si = list.findIndex((t) => t.id === sourceId);
+            const ti = list.findIndex((t) => t.id === targetId);
+            if (si === -1 || ti === -1) return prev;
+            const [moved] = list.splice(si, 1);
+            list.splice(ti, 0, moved);
+            return list.map((t, i) => ({ ...t, order: i }));
+          });
+        };
+
+        const handleMoveTask = (id, direction) => {
+          setTasks((prev) => {
+            const list = [...prev].sort((a, b) => (a.order || 0) - (b.order || 0));
+            const i = list.findIndex((t) => t.id === id);
+            if (i === -1) return prev;
+            if (direction === 'up' && i > 0) {
+              const tmp = list[i]; list[i] = list[i - 1]; list[i - 1] = tmp;
+            } else if (direction === 'down' && i < list.length - 1) {
+              const tmp = list[i]; list[i] = list[i + 1]; list[i + 1] = tmp;
+            }
+            return list.map((t, idx) => ({ ...t, order: idx }));
+          });
+        };
+
+        const handleAutoLayout = () => {
+          setTasks((prev) => autoLayoutNetwork(prev));
+          showToast('已按依赖层级重新布局', 'success');
+        };
+
+        // ---------- 搜索 ----------
+        const filteredTasks = useMemo(() => {
+          const q = searchQuery.trim().toLowerCase();
+          if (!q) return tasks;
+          return tasks.filter((t) =>
+            (t.name || '').toLowerCase().includes(q) ||
+            (t.content || '').toLowerCase().includes(q));
+        }, [tasks, searchQuery]);
+
+        const dimmedIds = useMemo(() => {
+          if (!searchQuery.trim()) return null;
+          const keep = new Set(filteredTasks.map((t) => t.id));
+          return new Set(tasks.filter((t) => !keep.has(t.id)).map((t) => t.id));
+        }, [tasks, filteredTasks, searchQuery]);
+
+        // ---------- 统计 ----------
+        const stats = useMemo(() => {
+          if (!tasks.length) return { count: 0, duration: 0, progress: 0, start: null, end: null };
+          let minS = Infinity, maxE = -Infinity;
+          tasks.forEach((t) => {
+            minS = Math.min(minS, startOfDay(t.start).getTime());
+            maxE = Math.max(maxE, startOfDay(t.end).getTime());
+          });
+          const totalDur = tasks.reduce((s, t) => s + durationOf(t), 0);
+          const done = tasks.reduce((s, t) => s + (t.progress || 0) * durationOf(t), 0);
+          return {
+            count: tasks.length,
+            duration: Math.max(1, Math.round((maxE - minS) / MS_DAY) + 1),
+            progress: totalDur ? Math.round(done / totalDur) : 0,
+            start: new Date(minS),
+            end: new Date(maxE),
+          };
+        }, [tasks]);
+
+        // ---------- 导出 ----------
+        // 目标容器不在当前视图时：先切到对应视图，等它挂载完成再截图（数据不受影响）
+        const waitForElement = (id, timeout = 2500) => new Promise((resolve) => {
+          const t0 = Date.now();
+          const tick = () => {
+            const node = document.getElementById(id);
+            if (node) return resolve(node);
+            if (Date.now() - t0 > timeout) return resolve(null);
+            setTimeout(tick, 50);
+          };
+          tick();
+        });
+
+        const exportImage = async (targetId, type, baseName) => {
+          if (!window.html2canvas) { showToast('导出组件尚未加载完成，请检查网络后重试', 'error'); return; }
+          const needView = targetId === 'network-export-area' ? 'network' : 'gantt';
+          let el = document.getElementById(targetId);
+          if (!el) {
+            setActiveView(needView);
+            el = await waitForElement(targetId);
+          }
+          if (!el) { showToast('目标视图未能加载，请重试', 'error'); return; }
+          showToast('正在生成图片，请稍候…', 'info');
+          const ctx = expandForExport(el);
+          try {
+            const canvas = await window.html2canvas(el, {
+              scale: 2,
+              backgroundColor: darkMode ? '#191919' : '#ffffff',
+              width: ctx.fullW,
+              height: ctx.fullH,
+              windowWidth: ctx.fullW + 40,
+              windowHeight: ctx.fullH + 40,
+              scrollX: 0,
+              scrollY: 0,
+              useCORS: true,
+              logging: false,
+            });
+
+            const stamp = formatDate(new Date()).replace(/-/g, '');
+            if (type === 'png') {
+              const a = document.createElement('a');
+              a.download = `${baseName}-${stamp}.png`;
+              a.href = canvas.toDataURL('image/png');
+              a.click();
+            } else {
+              const jsPDF = window.jspdf && window.jspdf.jsPDF;
+              if (!jsPDF) { showToast('PDF 组件尚未加载完成', 'error'); return; }
+              const pdf = new jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
+              const pw = pdf.internal.pageSize.getWidth();
+              const ph = pdf.internal.pageSize.getHeight();
+              const k = pw / canvas.width;
+              const pagePx = Math.max(1, Math.floor(ph / k));
+              let y = 0, page = 0;
+              while (y < canvas.height) {
+                const sliceH = Math.min(pagePx, canvas.height - y);
+                const c = document.createElement('canvas');
+                c.width = canvas.width;
+                c.height = sliceH;
+                const g = c.getContext('2d');
+                g.fillStyle = darkMode ? '#191919' : '#ffffff';
+                g.fillRect(0, 0, c.width, c.height);
+                g.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+                if (page > 0) pdf.addPage();
+                pdf.addImage(c.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pw, sliceH * k);
+                y += sliceH;
+                page += 1;
+              }
+              pdf.save(`${baseName}-${stamp}.pdf`);
+            }
+            showToast('导出完成', 'success');
+          } catch (err) {
+            console.error(err);
+            showToast('导出失败：' + (err && err.message ? err.message : '未知错误'), 'error');
+          } finally {
+            ctx.restore();
+          }
+        };
+
+        // ---------- 渲染 ----------
+        return (
+          <div className="flex flex-col h-screen w-full bg-notion-bg dark:bg-notion-bgDark text-gray-900 dark:text-gray-100 overflow-hidden">
+
+            {/* 标题 + 概览 */}
+            <div className="shrink-0 bg-white dark:bg-notion-sidebarDark pt-4 pb-2.5 z-40">
+              <textarea
+                ref={titleRef}
+                value={projectTitle}
+                onChange={(e) => setProjectTitle(e.target.value)}
+                rows={1}
+                placeholder="输入工程名称"
+                className="block text-xl font-bold text-center bg-transparent border-none resize-none overflow-hidden w-full max-w-3xl mx-auto text-gray-800 dark:text-white placeholder-gray-300 leading-tight"
+                style={{ minHeight: '32px' }}
+              />
+              <div className="mt-1.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-gray-400 dark:text-gray-500">
+                <span>共 <b className="text-gray-600 dark:text-gray-300 font-semibold">{stats.count}</b> 项任务</span>
+                <span className="text-gray-300 dark:text-gray-700">|</span>
+                <span>计划周期 <b className="text-gray-600 dark:text-gray-300 font-semibold">{stats.duration}</b> 天</span>
+                <span className="text-gray-300 dark:text-gray-700">|</span>
+                <span>总完成率 <b className="text-blue-600 dark:text-blue-400 font-semibold">{stats.progress}%</b></span>
+                {showCritical && (
+                  <React.Fragment>
+                    <span className="text-gray-300 dark:text-gray-700">|</span>
+                    <span className="text-rose-500">关键工作 <b className="font-semibold">{schedule.critical.size}</b> 项</span>
+                  </React.Fragment>
+                )}
+                {stats.start && (
+                  <React.Fragment>
+                    <span className="text-gray-300 dark:text-gray-700">|</span>
+                    <span className="tabular-nums">{formatDate(stats.start)} ~ {formatDate(stats.end)}</span>
+                  </React.Fragment>
+                )}
+              </div>
+              <div className="mt-2 mx-auto max-w-3xl h-1 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-500" style={{ width: stats.progress + '%' }} />
+              </div>
+            </div>
+
+            {/* 工具栏 */}
+            <header className="flex flex-wrap items-center justify-between gap-y-2 px-5 py-2.5 border-y border-notion-border dark:border-notion-borderDark bg-white dark:bg-notion-sidebarDark shadow-sm z-30 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-1.5 bg-blue-600 rounded-lg shadow-md shadow-blue-600/25">
+                  <Icons.Monitor size={17} className="text-white" />
+                </div>
+                <h1 className="text-sm font-bold tracking-tight whitespace-nowrap">施工进度计划</h1>
+
+                <div className="ml-4 flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg px-2.5 py-1.5 border border-transparent focus-within:border-blue-400 focus-within:bg-white dark:focus-within:bg-gray-900 transition-all">
+                  <Icons.Search size={13} className="text-gray-400 mr-1.5 shrink-0" />
+                  <input
+                    className="bg-transparent border-none outline-none text-xs w-36 placeholder-gray-400"
+                    placeholder="搜索任务…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                  {searchQuery && (
+                    <button onClick={() => setSearchQuery('')} className="ml-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" title="清空">
+                      <Icons.X size={12} />
+                    </button>
+                  )}
+                </div>
+                {searchQuery.trim() && (
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                    命中 <b className="text-blue-600 dark:text-blue-400">{filteredTasks.length}</b>/{tasks.length}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* 日 / 周 / 月（仅进度计划图有效）—— 位于「网络计划图」按钮左侧 */}
+                {activeView === 'gantt' && (
+                  <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
+                    {VIEW_MODES.map((mode) => (
+                      <button key={mode.value}
+                              onClick={() => setViewMode(mode.value)}
+                              title={VIEW_MODE_CONFIG[mode.value].tip}
+                              className={`w-8 py-1 text-xs font-medium rounded-md transition-all ${viewMode === mode.value ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-300' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'}`}>
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* 主视图切换：施工进度计划图 ⇄ 网络计划图 */}
+                <button onClick={() => setActiveView((v) => (v === 'network' ? 'gantt' : 'network'))}
+                        title={activeView === 'network' ? '切换回「施工进度计划图」' : '切换到「网络计划图」（与进度计划共用同一份数据，切换不会重置）'}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${activeView === 'network'
+                          ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30'
+                          : 'text-gray-500 border-gray-200 hover:bg-gray-50 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800'}`}>
+                  <Icons.Network size={13} /> 网络计划图
+                </button>
+
+                {/* 关键路径开关 */}
+                <button onClick={() => setShowCritical((v) => !v)}
+                        title="显示 / 隐藏关键工作标注（在任务表「关键」列勾选）"
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${showCritical
+                          ? 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/30'
+                          : 'text-gray-500 border-gray-200 hover:bg-gray-50 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800'}`}>
+                  <Icons.GitBranch size={13} /> 关键路径
+                </button>
+
+                <div className="h-5 w-px bg-gray-200 dark:bg-gray-700" />
+
+                <button onClick={() => setDarkMode((v) => !v)}
+                        className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300 transition-colors"
+                        title="切换深色 / 浅色">
+                  {darkMode ? <Icons.Sun size={16} /> : <Icons.Moon size={16} />}
+                </button>
+
+                {/* 导出 */}
+                <div className="relative">
+                  <button onClick={(e) => { e.stopPropagation(); setExportOpen((v) => !v); }}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs transition ${exportOpen
+                            ? 'border-blue-300 bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300 dark:border-blue-500/40'
+                            : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+                    <Icons.Download size={13} /> 导出
+                    <Icons.ChevronDown size={12} />
+                  </button>
+                  {exportOpen && (
+                    <div className="animate-pop absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1 z-50"
+                         onClick={(e) => e.stopPropagation()}>
+                      <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase">施工进度计划图</div>
+                      <button onClick={() => { setExportOpen(false); exportImage('gantt-export-area', 'png', '施工进度甘特图'); }}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <Icons.Image size={12} /> 导出 PNG 长图
+                      </button>
+                      <button onClick={() => { setExportOpen(false); exportImage('gantt-export-area', 'pdf', '施工进度甘特图'); }}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <Icons.FileText size={12} /> 导出 PDF（自动分页）
+                      </button>
+                      <div className="h-px bg-gray-100 dark:bg-gray-700 my-1" />
+                      <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase">网络计划图</div>
+                      <button onClick={() => { setExportOpen(false); exportImage('network-export-area', 'png', '网络计划图'); }}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <Icons.Image size={12} /> 导出 PNG
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <button onClick={() => { setCurrentTask(undefined); setIsModalOpen(true); }}
+                        className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-md shadow-blue-600/20 transition active:scale-95">
+                  <Icons.Plus size={14} /> 新建任务
+                </button>
+              </div>
+            </header>
+
+            {/* 主体：施工进度计划图 / 网络计划图 二选一全屏显示（数据共用） */}
+            <div className="flex-1 flex flex-col min-h-0 relative">
+              {activeView === 'gantt' ? (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <GanttChart
+                    tasks={filteredTasks}
+                    viewMode={viewMode}
+                    onTaskUpdate={handleTaskUpdate}
+                    onEditTask={(task) => { setCurrentTask(task || undefined); setIsModalOpen(true); }}
+                    onReorderTasks={handleReorderTasks}
+                    onMoveTask={handleMoveTask}
+                    onDeleteTask={askDeleteTask}
+                    schedule={schedule}
+                    showCritical={showCritical}
+                    searchQuery={searchQuery}
+                    sidebarWidth={sidebarWidth}
+                    setSidebarWidth={setSidebarWidth}
+                    colWidths={colWidths}
+                    setColWidths={setColWidths}
+                  />
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 flex flex-col bg-gray-50 dark:bg-canvasDark">
+                  <div className="px-4 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800/70 border-b border-notion-border dark:border-notion-borderDark flex items-center gap-2 shrink-0">
+                    <Icons.Network size={13} />
+                    网络计划图
+                    <span className="font-normal text-gray-400 dark:text-gray-500">
+                      （双击节点编辑 · 拖动右侧圆点连线 · 空白处拖动平移 · 数据与进度计划图同步）
+                    </span>
+                  </div>
+                  <div className="flex-1 relative overflow-hidden" id="network-export-area">
+                    <NetworkDiagram
+                      tasks={tasks}
+                      onTaskUpdate={handleTaskUpdate}
+                      onEditTask={(task) => { setCurrentTask(task); setIsModalOpen(true); }}
+                      onTaskLayout={handleAutoLayout}
+                      schedule={schedule}
+                      showCritical={showCritical}
+                      searchQuery={searchQuery}
+                      dimmedIds={dimmedIds}
+                      onToast={showToast}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <TaskModal
+              isOpen={isModalOpen}
+              onClose={() => { setIsModalOpen(false); setCurrentTask(undefined); }}
+              onSave={handleSaveTask}
+              task={currentTask}
+              allTasks={tasks}
+              onDelete={askDeleteTask}
+            />
+
+            <ConfirmDialog state={confirmState} onClose={() => setConfirmState(null)} />
+            <Toast toast={toast} />
+          </div>
+        );
+      };
+
+      // ============================================================
+      // 12. 挂载
+      // ============================================================
+      createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
