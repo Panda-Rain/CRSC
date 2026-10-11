@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>宇哥制作 · 甘特图与网络图</title>
+    <title>进度计划 · 甘特图与网络图</title>
 
     <!-- 1. 样式库: Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -152,6 +152,10 @@
       const ZOOM_MIN = 0.4;
       const ZOOM_MAX = 3;
 
+      // 行高：任务表行、甘特网格、依赖连线的走廊位置全部由它驱动。
+      // （2026-10-11 曾试过加大到 52px，用户觉得整体偏大，已改回 40px）
+      // 进度块高 = ROW_HEIGHT - 10 = 30px，块上下各留 5px 净空
+      // （依赖连线绕道的横向走廊就走在每行的上边界，靠的就是这 5px）。
       const ROW_HEIGHT = 40;
       const HEADER_HEIGHT = 56;
 
@@ -163,6 +167,12 @@
       // 网络图连线箭头的固定尺寸（userSpaceOnUse，不随线宽变化）
       const ARROW_LEN = 12;   // 沿连线方向的长度：箭头尾部 → 箭尖
       const ARROW_H = 8;      // 垂直方向的宽度
+
+      // 依赖连线配色：关键线路 = 红；非关键线路 = 黑
+      // （非关键用 CSS 类 text-black dark:text-gray-200 走 currentColor：
+      //   深色主题下纯黑连线在深底上看不见，故自动转为浅色）
+      const EDGE_CRIT_COLOR = '#dc2626';
+      const EDGE_NORMAL_CLS = 'text-black dark:text-gray-200';
 
       // ============================================================
       // 3. 工具函数
@@ -242,7 +252,7 @@
       };
 
       // ============================================================
-      // 4. 关键工作（由任务表「关键」复选框人工标注）
+      // 4. 关键工作（由「编辑任务」弹窗里的「设为关键工作」人工标注）
       //    —— 原「总时差（CPM 自动计算）」功能已取消
       // ============================================================
       const computeCritical = (tasks) => {
@@ -853,38 +863,93 @@
         const todayIdx = diffDays(new Date(), dateRange.start);
         const showToday = todayIdx >= 0 && todayIdx < totalDays;
 
-        // ---------- 依赖连线 ----------
-        const buildDepPath = (dep, cur) => {
+        // ---------- 依赖连线（只画线，不带箭头） ----------
+        // 用户要求：进度计划图保留依赖连线，但**取消箭头**（箭头只在网络计划图里出现）。
+        //
+        // 把折线点列转成「圆角折线」——每个拐角切掉半径 r 的直角、改用二次贝塞尔收圆，
+        // 于是整条线看起来是柔和的曲线而不是生硬的折角。
+        const roundedPath = (pts, r) => {
+          const p = pts.filter((v, i) => i === 0 || Math.hypot(v[0] - pts[i - 1][0], v[1] - pts[i - 1][1]) > 0.5);
+          if (p.length < 2) return '';
+          let d = `M ${p[0][0]} ${p[0][1]}`;
+          for (let i = 1; i < p.length - 1; i++) {
+            const a = p[i - 1], c = p[i], b = p[i + 1];
+            const v1 = [a[0] - c[0], a[1] - c[1]];
+            const v2 = [b[0] - c[0], b[1] - c[1]];
+            const l1 = Math.hypot(v1[0], v1[1]) || 1;
+            const l2 = Math.hypot(v2[0], v2[1]) || 1;
+            const rr = Math.min(r, l1 / 2, l2 / 2);
+            d += ` L ${c[0] + (v1[0] / l1) * rr} ${c[1] + (v1[1] / l1) * rr}`;
+            d += ` Q ${c[0]} ${c[1]} ${c[0] + (v2[0] / l2) * rr} ${c[1] + (v2[1] / l2) * rr}`;
+          }
+          d += ` L ${p[p.length - 1][0]} ${p[p.length - 1][1]}`;
+          return d;
+        };
+
+        // 两种走线：
+        //   ① 非反向（x2 ≥ x1），**一律走平滑 S 曲线**直达紧后进度条左端。
+        //      包含两种情形：
+        //        · 间隔够宽（≥20px）→ 控制点取间隔的一半，S 摆幅自然跟随间隔；
+        //        · 间隔很窄（0 ~ 20px，典型是"紧后开始日 = 紧前结束次日"的 0 间隔）→
+        //          控制点仍外扩一个下限（≥20px），所以线依然是一段柔和的 S 曲线，
+        //          不会退化成一根竖直直杠或生硬的直角折线。
+        //      S 曲线安全性的关键（间隔为 0 时也在空白里摆动，绝不压到任务条）：
+        //        横向偏移 x(t) = 3c·t(1-t)(1-2t)，最大 ±0.29c；
+        //        向右的最大偏移出现在 t≈0.21 处，此时纵向才走了约 0.11Δ，
+        //        位置在**紧前条右边缘之外**；向左的最大偏移在 t≈0.79 处，
+        //        纵向约 0.89Δ，位置在**紧后条左边缘之外**，两侧都在空白区。
+        //   ② 反向（x2 < x1，即"下面的任务开始在上面任务结束之前"）→
+        //      不能直接连，否则线会横穿进度条。改为「绕道」：
+        //      从紧前条右端伸出 → 下/上行到「两行之间的净空走廊」→ 向左绕到紧后进度条
+        //      「前端（左端）」的左边 → 再拐回来接入左端边缘。
+        //      走廊取在紧后任务所在行的**行边界**上：任务条只占 top+5 ~ top+35，
+        //      行边界上下各有 5px 净空，所以这条横向走廊不会压到任何任务条。
+        const buildDepPath = (dep, cur, laneIdx = 0, laneCount = 1) => {
           const x1 = (diffDays(dep.end, dateRange.start) + 1) * dayWidth;
           const y1 = dep.index * ROW_HEIGHT + ROW_HEIGHT / 2;
           const x2 = diffDays(cur.start, dateRange.start) * dayWidth;
           const y2 = cur.index * ROW_HEIGHT + ROW_HEIGHT / 2;
-          if (x2 - x1 >= 20) {
-            const c = Math.max(14, Math.min(64, (x2 - x1) / 2));
+
+          // ① 非反向（含 0 间隔）：平滑 S 曲线
+          if (x2 - x1 >= 0) {
+            const c = Math.max(20, Math.min(64, (x2 - x1) / 2));
             return `M ${x1} ${y1} C ${x1 + c} ${y1}, ${x2 - c} ${y2}, ${x2} ${y2}`;
           }
-          const elbow = x1 + 14;
-          return `M ${x1} ${y1} L ${elbow} ${y1} L ${elbow} ${y2} L ${x2} ${y2}`;
+
+          // ③ 反向：曲线绕道到进度条前端再接入
+          const S = clamp(dayWidth * 0.35, 10, 22);   // 从紧前条右端向右伸出的距离
+          const A = clamp(dayWidth * 0.3, 9, 18);     // 接入通道离进度条左端多远
+          const xC = x1 + S;                          // 竖直通道（紧前条右侧）
+          const xD = Math.max(0, x2 - A);             // 竖直通道（进度条左端的前方）
+          // 绕行走廊 = 紧后任务所在行的上边界（上下各 5px 净空）。
+          // 同一个任务有多个紧前工作时，把各条线在走廊里上下错开 3px，避免叠在一起看不清。
+          const laneShift = laneCount <= 1 ? 0 : ((laneIdx % 3) - 1) * 3;
+          const laneY = cur.index * ROW_HEIGHT + laneShift;
+          return roundedPath(
+            [[x1, y1], [xC, y1], [xC, laneY], [xD, laneY], [xD, y2], [x2, y2]],
+            12
+          );
         };
 
-        const renderDependencies = () => tasks.flatMap((task) =>
-          (task.dependencies || []).map((depId) => {
+        const renderDependencies = () => tasks.flatMap((task) => {
+          const deps = task.dependencies || [];
+          return deps.map((depId, di) => {
             const dep = flatTasks.find((t) => t.id === depId);
             const cur = flatTasks.find((t) => t.id === task.id);
             if (!dep || !cur) return null;
             const crit = showCritical && schedule.criticalEdges.has(depId + '|' + task.id);
             return (
               <path key={depId + '-' + task.id}
-                    d={buildDepPath(dep, cur)}
-                    stroke={crit ? '#f43f5e' : 'currentColor'}
+                    d={buildDepPath(dep, cur, di, deps.length)}
+                    stroke={crit ? EDGE_CRIT_COLOR : 'currentColor'}
                     strokeWidth={crit ? 2 : 1.4}
                     strokeDasharray={crit ? undefined : '5 3'}
-                    fill="none"
-                    markerEnd={crit ? 'url(#arrowCrit)' : 'url(#arrowNorm)'}
-                    opacity={crit ? 1 : 0.7} />
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none" />
             );
-          })
-        );
+          });
+        });
 
         // ---------- 行拖拽排序 ----------
         const handleRowDrop = (e, targetId) => {
@@ -947,7 +1012,6 @@
                   <HeadCell col="start" label="开始" center />
                   <HeadCell col="end" label="结束" center />
                   <HeadCell col="duration" label="工期" center />
-                  <HeadCell col="critical" label="关键" center />
                 </div>
               </div>
               {/* 数据行 */}
@@ -956,7 +1020,8 @@
                   {flatTasks.map((task, i) => {
                     const dur = durationOf(task);
                     const ms = isMilestone(task);
-                    const marked = !!task.critical;
+                    // 说明：任务表已不再提供「关键」列（2026-10-12 用户要求），
+                    // 关键工作改在「编辑任务」弹窗里勾选；这里只用一个红点提示状态。
                     const crit = showCritical && schedule.critical.has(task.id);
                     const isHover = hoverId === task.id;
                     return (
@@ -977,25 +1042,17 @@
                         <div className="flex items-center gap-1.5 h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 px-2.5 overflow-hidden" style={{ width: colWidths.name }}>
                           {crit && <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-rose-500" title="关键工作" />}
                           {ms && <Icons.Flag size={11} className="shrink-0 text-amber-500" />}
-                          <span className="truncate font-medium text-gray-700 dark:text-gray-200">
+                          <span className="truncate font-medium text-black dark:text-gray-100">
                             <Highlight text={task.name} query={searchQuery} />
                           </span>
                         </div>
-                        <div className="flex items-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 px-2.5 text-gray-500 dark:text-gray-400" style={{ width: colWidths.content }}>
+                        <div className="flex items-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 px-2.5 text-black dark:text-gray-100" style={{ width: colWidths.content }}>
                           <span className="truncate"><Highlight text={task.content || '—'} query={searchQuery} /></span>
                         </div>
-                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-600 dark:text-gray-400 tabular-nums" style={{ width: colWidths.start }}>{formatDate(task.start)}</div>
-                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-600 dark:text-gray-400 tabular-nums" style={{ width: colWidths.end }}>{formatDate(task.end)}</div>
-                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-gray-500 dark:text-gray-400 tabular-nums" style={{ width: colWidths.duration }}>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-black dark:text-gray-100 tabular-nums" style={{ width: colWidths.start }}>{formatDate(task.start)}</div>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-black dark:text-gray-100 tabular-nums" style={{ width: colWidths.end }}>{formatDate(task.end)}</div>
+                        <div className="flex items-center justify-center h-full shrink-0 border-r border-gray-100 dark:border-gray-800/80 text-black dark:text-gray-100 tabular-nums" style={{ width: colWidths.duration }}>
                           {ms ? <span className="text-amber-600 dark:text-amber-400">节点</span> : `${dur}天`}
-                        </div>
-                        <div className="flex items-center justify-center h-full shrink-0" style={{ width: colWidths.critical }}>
-                          <input type="checkbox"
-                                 checked={marked}
-                                 onClick={(e) => e.stopPropagation()}
-                                 onChange={(e) => onTaskUpdate({ ...task, critical: e.target.checked })}
-                                 title="勾选后，该任务按「关键工作」在甘特图与网络图中标红"
-                                 className="w-[15px] h-[15px] rounded accent-rose-500 cursor-pointer" />
                         </div>
                       </div>
                     );
@@ -1013,7 +1070,6 @@
                     <div className="h-full shrink-0" style={{ width: colWidths.start }} />
                     <div className="h-full shrink-0" style={{ width: colWidths.end }} />
                     <div className="h-full shrink-0" style={{ width: colWidths.duration }} />
-                    <div className="h-full shrink-0" style={{ width: colWidths.critical }} />
                   </div>
                 </div>
               </div>
@@ -1023,7 +1079,7 @@
             <div className="absolute top-0 bottom-0 w-[3px] -ml-[1px] cursor-col-resize z-40 hover:bg-blue-400/60 transition-colors"
                  style={{ left: sidebarWidth }}
                  onMouseDown={startSidebarResize}
-                 onDoubleClick={() => setSidebarWidth(640)}
+                 onDoubleClick={() => setSidebarWidth(584)}
                  title="拖动调整任务表宽度（双击复位）" />
 
             {/* ============ 右侧：甘特图 ============ */}
@@ -1093,17 +1149,9 @@
                     <div className="absolute top-0 bottom-0 bg-notion-border dark:bg-notion-borderDark" style={{ left: chartWidth - 1, width: 1 }} />
                   </div>
 
-                  {/* 依赖连线 */}
-                  <svg className="absolute inset-0 pointer-events-none z-[5] text-slate-400 dark:text-slate-500"
+                  {/* 依赖连线：**只有线、没有箭头**（箭头仅出现在网络计划图） */}
+                  <svg className={`absolute inset-0 pointer-events-none z-[5] ${EDGE_NORMAL_CLS}`}
                        width={chartWidth} height={contentHeight}>
-                    <defs>
-                      <marker id="arrowNorm" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
-                        <polygon points="0 0, 9 3.5, 0 7" fill="#94a3b8" />
-                      </marker>
-                      <marker id="arrowCrit" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
-                        <polygon points="0 0, 9 3.5, 0 7" fill="#f43f5e" />
-                      </marker>
-                    </defs>
                     {renderDependencies()}
                   </svg>
 
@@ -1145,7 +1193,7 @@
                           <div title={tip}
                                className={`w-[18px] h-[18px] rotate-45 rounded-[3px] shadow-sm border cursor-move transition-transform hover:scale-110 ${crit ? 'bg-rose-500 border-rose-600' : 'bg-amber-400 border-amber-500'}`}
                                onMouseDown={(e) => startBarDrag(e, task, 'move')} />
-                          <span className={`absolute left-6 top-1/2 -translate-y-1/2 text-[11px] whitespace-nowrap pointer-events-none ${crit ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-gray-600 dark:text-gray-300'}`}>
+                          <span className={`absolute left-6 top-1/2 -translate-y-1/2 text-[11px] whitespace-nowrap pointer-events-none ${crit ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-black dark:text-gray-100'}`}>
                             {task.name}
                           </span>
                         </div>
@@ -1153,22 +1201,30 @@
                     }
 
                     const barW = Math.max(8, dur * dayWidth);
+                    const barH = ROW_HEIGHT - 10;          // 进度条高 30px（行高 40px 内居中）
+                    const fillPx = (barW * pct) / 100;     // 「已完工」填充段的像素宽度
+                    const pctText = Math.round(pct) + '%';
+                    // ---------- 百分比：显示在进度条「里面」的左边（2026-10-12 用户定版） ----------
+                    // 贴在条左端内侧（6px 内边距），**位置不随进度移动**，只有颜色翻转：
+                    //   · 填充盖住这块标签区 → 白字（衬在深色填充上）
+                    //   · 没盖住            → 深字（衬在浅色未填充底上）
+                    // 两种颜色都看得清，所以任何进度下都不会出现"半个字看不清"。
+                    const PCT_W = 30;                              // “100%” 在 11px 等宽数字下约 26px，留余量
+                    const pctFits = barW >= PCT_W + 4;             // 条太窄就整块不显示，避免被条边裁成半截数字
+                    const pctOnFill = fillPx >= 6 + PCT_W / 2;     // 填充盖住标签区一半以上 → 白字
                     return (
                       <div key={task.id} className="absolute z-10 group"
-                           style={{ left, top: top + 7, width: barW, height: ROW_HEIGHT - 14 }}
+                           style={{ left, top: top + 5, width: barW, height: barH }}
                            onMouseEnter={() => setHoverId(task.id)} onMouseLeave={() => setHoverId(null)}>
                         <div title={tip}
                              onMouseDown={(e) => startBarDrag(e, task, 'move')}
-                             className={`h-full rounded-[5px] relative overflow-hidden border cursor-move transition-all ${isHover ? 'shadow-md' : 'shadow-sm'} ${
+                             className={`h-full rounded-[6px] relative overflow-hidden border cursor-move transition-all ${isHover ? 'shadow-md' : 'shadow-sm'} ${
                                crit
                                  ? `bg-rose-100 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/50 ${isHover ? 'ring-2 ring-rose-300 dark:ring-rose-500/40' : ''}`
                                  : `bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/50 ${isHover ? 'ring-2 ring-blue-300 dark:ring-blue-500/40' : ''}`
                              }`}>
                           <div className={`absolute inset-y-0 left-0 ${crit ? 'bg-gradient-to-r from-rose-500 to-red-500' : 'bg-gradient-to-r from-blue-500 to-indigo-500'}`}
                                style={{ width: pct + '%' }} />
-                          {barW >= 34 && pct >= 18 && (
-                            <span className="absolute inset-y-0 left-0 flex items-center pl-1.5 text-[10px] font-semibold text-white tabular-nums pointer-events-none">{pct}%</span>
-                          )}
                           {dayWidth >= 16 && barW >= 30 && (
                             <React.Fragment>
                               <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-w-resize hover:bg-white/40 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -1177,12 +1233,20 @@
                                    onMouseDown={(e) => startBarDrag(e, task, 'resize-right')} />
                             </React.Fragment>
                           )}
+                          {/* 百分比：贴在条左端内侧（6px），位置固定，只有颜色随填充翻转 */}
+                          {pctFits && (
+                            <span className={`absolute left-[6px] top-1/2 -translate-y-1/2 text-[11px] font-medium tabular-nums leading-none pointer-events-none ${
+                              pctOnFill ? 'text-white' : 'text-gray-800 dark:text-gray-100'
+                            }`}>
+                              {pctText}
+                            </span>
+                          )}
                         </div>
-                        {/* 条右侧信息 */}
-                        <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 text-[11px] whitespace-nowrap pointer-events-none">
-                          <span className={crit ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-gray-700 dark:text-gray-200'}>{task.name}</span>
-                          <span className="text-gray-400 dark:text-gray-500 tabular-nums">{pct}%</span>
-                          {crit && <span className="text-[9px] px-1 rounded bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-300">关键</span>}
+                        {/* 任务名称挂在进度条「后面」（右外侧，与条右端留 8px 间距），
+                            与里程碑的名称位置保持一致；非关键为黑色、关键为红色。 */}
+                        <span className={`absolute top-1/2 -translate-y-1/2 text-[11px] whitespace-nowrap pointer-events-none ${crit ? 'text-rose-600 dark:text-rose-400 font-medium' : 'text-black dark:text-gray-100'}`}
+                              style={{ left: barW + 8 }}>
+                          {task.name}
                         </span>
                       </div>
                     );
@@ -1417,7 +1481,7 @@
               <path key={depId + '-' + task.id}
                     d={buildPath(dep, task)}
                     fill="none"
-                    stroke={crit ? '#f43f5e' : 'currentColor'}
+                    stroke={crit ? EDGE_CRIT_COLOR : 'currentColor'}
                     strokeWidth={crit ? 2.2 : 1.5}
                     strokeLinecap={crit ? 'butt' : 'round'}
                     strokeDasharray={crit ? undefined : '6 4'}
@@ -1455,15 +1519,15 @@
             {/* 画布内容 */}
             <div className="absolute inset-0 w-full h-full pointer-events-none"
                  style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
-              <svg className="absolute inset-0 overflow-visible pointer-events-none text-slate-400 dark:text-slate-500">
+              <svg className={`absolute inset-0 overflow-visible pointer-events-none ${EDGE_NORMAL_CLS}`}>
                 <defs>
                   {/* markerUnits=userSpaceOnUse：箭头固定为 ARROW_LEN×ARROW_H，不再随线宽缩放；
                       refX=0 表示把「箭头尾部」对准连线终点，箭尖由此自动向前伸 ARROW_LEN */}
                   <marker id="netArrowNormal" markerUnits="userSpaceOnUse" markerWidth={ARROW_LEN} markerHeight={ARROW_H} refX="0" refY={ARROW_H / 2} orient="auto">
-                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill="#94a3b8" />
+                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill="currentColor" />
                   </marker>
                   <marker id="netArrowCrit" markerUnits="userSpaceOnUse" markerWidth={ARROW_LEN} markerHeight={ARROW_H} refX="0" refY={ARROW_H / 2} orient="auto">
-                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill="#f43f5e" />
+                    <polygon points={`0 0, ${ARROW_LEN} ${ARROW_H / 2}, 0 ${ARROW_H}`} fill={EDGE_CRIT_COLOR} />
                   </marker>
                   {/* 拖拽预览线：箭尖需跟随鼠标，故 refX 取箭头全长（尾端自动后移） */}
                   <marker id="netArrowActive" markerUnits="userSpaceOnUse" markerWidth={ARROW_LEN} markerHeight={ARROW_H} refX={ARROW_LEN} refY={ARROW_H / 2} orient="auto">
@@ -1602,7 +1666,7 @@
       const T0 = startOfDay(new Date());
       const D = (offset) => addDays(T0, offset);
 
-      // critical: true = 该任务为「关键工作」（可在任务表「关键」列勾选 / 取消）
+      // critical: true = 该任务为「关键工作」（在「编辑任务」弹窗里勾选 /取消）
       const INITIAL_TASKS = [
         { id: 't1', name: '施工准备', content: '场地移交、材料报审、技术交底', start: D(-14), end: D(-12), progress: 100, dependencies: [], critical: true, order: 0 },
         { id: 't2', name: '预埋管与桥架安装', content: 'BAS 桥架敷设、预埋管疏通', start: D(-11), end: D(-4), progress: 85, dependencies: ['t1'], critical: true, order: 1 },
@@ -1698,11 +1762,13 @@
         const [darkMode, setDarkMode] = useState(() => !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
         const [projectTitle, setProjectTitle] = useState('地铁车站 BAS 及门禁系统工程进度计划');
         const [showCritical, setShowCritical] = useState(true);
-        // 当前主视图：'gantt' = 施工进度计划图，'network' = 网络计划图（两视图共用同一份 tasks，切换不重置数据）
+        // 当前主视图：'gantt' = 进度计划图，'network' = 网络计划图（两视图共用同一份 tasks，切换不重置数据）
         const [activeView, setActiveView] = useState('gantt');
         // 任务表列宽 / 侧栏宽度提升到 App，切换视图后不丢失
-        const [sidebarWidth, setSidebarWidth] = useState(640);
-        const [colWidths, setColWidths] = useState({ index: 44, name: 176, content: 132, start: 88, end: 88, duration: 56, critical: 56 });
+        const [sidebarWidth, setSidebarWidth] = useState(584);
+        // 「关键」列已于 2026-10-12 移除（用户要求：主界面不再有该复选框，
+        // 关键工作只在「编辑任务」弹窗里勾选），所以列宽表里不再有 critical。
+        const [colWidths, setColWidths] = useState({ index: 44, name: 176, content: 132, start: 88, end: 88, duration: 56 });
         const [exportOpen, setExportOpen] = useState(false);
         const [toast, setToast] = useState(null);
         const [confirmState, setConfirmState] = useState(null);
@@ -1983,7 +2049,7 @@
                 <div className="p-1.5 bg-blue-600 rounded-lg shadow-md shadow-blue-600/25">
                   <Icons.Monitor size={17} className="text-white" />
                 </div>
-                <h1 className="text-sm font-bold tracking-tight whitespace-nowrap">施工进度计划</h1>
+                <h1 className="text-sm font-bold tracking-tight whitespace-nowrap">进度计划</h1>
 
                 <div className="ml-4 flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg px-2.5 py-1.5 border border-transparent focus-within:border-blue-400 focus-within:bg-white dark:focus-within:bg-gray-900 transition-all">
                   <Icons.Search size={13} className="text-gray-400 mr-1.5 shrink-0" />
@@ -2021,9 +2087,9 @@
                   </div>
                 )}
 
-                {/* 主视图切换：施工进度计划图 ⇄ 网络计划图 */}
+                {/* 主视图切换：进度计划图 ⇄ 网络计划图 */}
                 <button onClick={() => setActiveView((v) => (v === 'network' ? 'gantt' : 'network'))}
-                        title={activeView === 'network' ? '切换回「施工进度计划图」' : '切换到「网络计划图」（与进度计划共用同一份数据，切换不会重置）'}
+                        title={activeView === 'network' ? '切换回「进度计划图」' : '切换到「网络计划图」（与进度计划共用同一份数据，切换不会重置）'}
                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${activeView === 'network'
                           ? 'bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30'
                           : 'text-gray-500 border-gray-200 hover:bg-gray-50 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800'}`}>
@@ -2032,7 +2098,7 @@
 
                 {/* 关键路径开关 */}
                 <button onClick={() => setShowCritical((v) => !v)}
-                        title="显示 / 隐藏关键工作标注（在任务表「关键」列勾选）"
+                        title="显示 / 隐藏关键工作标注（在「编辑任务」弹窗里勾选「设为关键工作」）"
                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${showCritical
                           ? 'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/30'
                           : 'text-gray-500 border-gray-200 hover:bg-gray-50 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800'}`}>
@@ -2059,12 +2125,12 @@
                   {exportOpen && (
                     <div className="animate-pop absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1 z-50"
                          onClick={(e) => e.stopPropagation()}>
-                      <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase">施工进度计划图</div>
-                      <button onClick={() => { setExportOpen(false); exportImage('gantt-export-area', 'png', '施工进度甘特图'); }}
+                      <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase">进度计划图</div>
+                      <button onClick={() => { setExportOpen(false); exportImage('gantt-export-area', 'png', '进度甘特图'); }}
                               className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
                         <Icons.Image size={12} /> 导出 PNG 长图
                       </button>
-                      <button onClick={() => { setExportOpen(false); exportImage('gantt-export-area', 'pdf', '施工进度甘特图'); }}
+                      <button onClick={() => { setExportOpen(false); exportImage('gantt-export-area', 'pdf', '进度甘特图'); }}
                               className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
                         <Icons.FileText size={12} /> 导出 PDF（自动分页）
                       </button>
@@ -2085,7 +2151,7 @@
               </div>
             </header>
 
-            {/* 主体：施工进度计划图 / 网络计划图 二选一全屏显示（数据共用） */}
+            {/* 主体：进度计划图 / 网络计划图 二选一全屏显示（数据共用） */}
             <div className="flex-1 flex flex-col min-h-0 relative">
               {activeView === 'gantt' ? (
                 <div className="flex-1 min-h-0 flex flex-col">
